@@ -19,3 +19,5 @@ models/
 # system
 .DS_Store
 Thumbs.db
+
+.env

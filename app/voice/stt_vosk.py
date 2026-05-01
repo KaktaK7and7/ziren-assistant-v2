@@ -34,7 +34,8 @@ class VoskSTT:
         self,
         model_path: str | Path,
         state: AudioState,
-        wake_words: list[str] | None = None,
+        ai_wake_words: list[str] | None = None,
+        command_wake_words: list[str] | None = None,
         stop_words: list[str] | None = None,
         sample_rate: int = 16000,
         block_size: int = 4000,
@@ -42,7 +43,8 @@ class VoskSTT:
         self.model_path = Path(model_path)
         self.state = state
 
-        self.wake_words = [normalize_text(w) for w in (wake_words or ["зирен"])]
+        self.ai_wake_words = [normalize_text(w) for w in (ai_wake_words or ["мелисса"])]
+        self.command_wake_words = [normalize_text(w) for w in (command_wake_words or ["змея"])]
         self.stop_words = [normalize_text(w) for w in (stop_words or ["стоп", "замолчи", "хватит"])]
 
         self.sample_rate = sample_rate
@@ -141,18 +143,29 @@ class VoskSTT:
 
                 if self.state.listening_mode == ListeningMode.WAKE_WORD:
                     if not self.state.wake_word_active.is_set():
-                        wake_word = self._find_wake_word(text)
+                        wake_type, wake_word = self._find_wake_word(text)
 
-                        if wake_word:
+                        if wake_type == "command":
                             command_after_wake = self._remove_wake_word(text, wake_word)
 
                             if command_after_wake:
-                                return command_after_wake
+                                return f"__command__:{command_after_wake}"
 
                             self.state.wake_word_active.set()
                             command_wait_started_at = time.time()
                             self.clear_queue()
-                            return "__wake_word__"
+                            return "__wake_command__"
+
+                        if wake_type == "ai":
+                            command_after_wake = self._remove_wake_word(text, wake_word)
+
+                            if command_after_wake:
+                                return f"__ai__:{command_after_wake}"
+
+                            self.state.wake_word_active.set()
+                            command_wait_started_at = time.time()
+                            self.clear_queue()
+                            return "__wake_ai__"
 
                         continue
 
@@ -231,19 +244,27 @@ class VoskSTT:
     def _contains_any(self, text: str, words: list[str]) -> bool:
         return any(word in text for word in words)
     
-    def _find_wake_word(self, text: str) -> str | None:
+    def _find_wake_word(self, text: str) -> tuple[str | None, str | None]:
         text_words = text.split()
 
         for word in text_words:
-            match = find_fuzzy_match(
+            command_match = find_fuzzy_match(
                 text=word,
-                variants=self.wake_words,
+                variants=self.command_wake_words,
                 threshold=0.75,
             )
-            if match:
-                return match
+            if command_match:
+                return "command", command_match
 
-        return None
+            ai_match = find_fuzzy_match(
+                text=word,
+                variants=self.ai_wake_words,
+                threshold=0.75,
+            )
+            if ai_match:
+                return "ai", ai_match
+
+        return None, None
 
     def _remove_wake_word(self, text: str, wake_word: str) -> str:
         command = text.replace(wake_word, "", 1)

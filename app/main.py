@@ -1,6 +1,10 @@
 import threading
+from getpass import getpass
 from pathlib import Path
 
+from app.api.auth_client import AuthClient
+from app.api.neuro_client import NeuroClient
+from app.storage.local_store import save_session
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
 from app.voice.stt_vosk import VoskSTT
@@ -15,10 +19,29 @@ def main() -> None:
     state = AudioState()
     state.set_mode(ListeningMode.WAKE_WORD)
 
+    auth = AuthClient()
+    session = auth.get_saved_session()
+
+    if not session.get("user_id"):
+        print("🔐 Нужно войти в аккаунт.")
+        email = input("Email: ").strip()
+        password = getpass("Пароль: ")
+
+        session = auth.login(email=email, password=password)
+        print(f"✅ Вход выполнен: {session['username']}")
+    else:
+        print(f"✅ Сессия найдена: {session.get('username')}")
+
+    neuro = NeuroClient(
+        user_id=session["user_id"],
+        session_id=session.get("session_id"),
+    )
+
     stt = VoskSTT(
         model_path=VOSK_MODEL_PATH,
         state=state,
-        wake_words=["мелисса"],
+        ai_wake_words=["мелисса"],
+        command_wake_words=["змея"],
         stop_words=["стоп", "замолчи", "хватит"],
     )
 
@@ -33,11 +56,18 @@ def main() -> None:
         state.ignore_stt_for(0.8)
         stt.clear_queue()
 
+    def start_stop_listener() -> None:
+        threading.Thread(
+            target=lambda: tts.stop() if stt.listen_for_stop() else None,
+            daemon=True,
+        ).start()
+
     stt.load()
     tts.load()
 
     print("🎤 Режим: WAKE_WORD")
-    print("🎤 Скажи: мелисса")
+    print("🧠 Нейросеть: мелисса")
+    print("⚡ Команды: змея")
     print("🛑 Во время речи скажи: стоп")
 
     try:
@@ -47,12 +77,29 @@ def main() -> None:
             if not text:
                 continue
 
-            if text == "__wake_word__":
-                print("🟢 Мелисса услышала кодовое слово.")
-                tts.speak("Слушаю.", on_finish=after_tts_finished)
+            current_mode = None
+
+            if text.startswith("__command__:"):
+                current_mode = "command"
+                text = text.replace("__command__:", "", 1)
+
+            elif text.startswith("__ai__:"):
+                current_mode = "ai"
+                text = text.replace("__ai__:", "", 1)
+
+            elif text == "__wake_command__":
+                current_mode = "command"
+                print("⚡ Змея услышала кодовое слово.")
+                tts.speak("Слушаю команду.", on_finish=after_tts_finished)
                 continue
 
-            if text == "__command_timeout__":
+            elif text == "__wake_ai__":
+                current_mode = "ai"
+                print("🧠 Мелисса услышала кодовое слово.")
+                tts.speak("Я здесь.", on_finish=after_tts_finished)
+                continue
+
+            elif text == "__command_timeout__":
                 print("⌛ Команда не поступила.")
                 tts.speak("Долго думаешь.", on_finish=after_tts_finished)
                 continue
@@ -74,14 +121,41 @@ def main() -> None:
                 )
 
                 tts.speak(long_text, on_finish=after_tts_finished)
+                start_stop_listener()
+                continue
 
-                threading.Thread(
-                    target=lambda: tts.stop() if stt.listen_for_stop() else None,
-                    daemon=True,
-                ).start()
+            if current_mode == "command":
+                print("⚡ Локальная команда")
 
-            else:
-                tts.speak("Команда распознана.", on_finish=after_tts_finished)
+                # Пока заглушка. Потом сюда подключим command router.
+                tts.speak("Команда выполнена.", on_finish=after_tts_finished)
+                start_stop_listener()
+                continue
+
+            if current_mode == "ai":
+                print("🧠 Отправляю в нейро-модуль...")
+
+                try:
+                    answer = neuro.send_message(text)
+
+                    session["session_id"] = neuro.session_id
+                    save_session(session)
+
+                    print(f"🤖 Мелисса: {answer}")
+                    tts.speak(answer, on_finish=after_tts_finished)
+                    start_stop_listener()
+
+                except Exception as e:
+                    print(f"❌ Ошибка нейро-модуля: {e}")
+                    tts.speak(
+                        "Не смогла связаться с нейро-модулем.",
+                        on_finish=after_tts_finished,
+                    )
+                    start_stop_listener()
+
+                continue
+
+            print("⚠️ Неизвестный режим. Скажи 'мелисса' для нейросети или 'змея' для команд.")
 
     finally:
         state.shutdown.set()

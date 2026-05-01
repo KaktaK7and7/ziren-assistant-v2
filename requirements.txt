@@ -5,3 +5,5 @@ num2words
 silero
 numpy
 python-Levenshtein
+httpx
+python-dotenv
