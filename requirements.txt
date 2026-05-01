@@ -1,0 +1,7 @@
+vosk
+sounddevice
+torch
+num2words
+silero
+numpy
+python-Levenshtein

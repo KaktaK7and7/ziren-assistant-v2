@@ -1,0 +1,21 @@
+# venv
+.venv/
+venv/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# vscode
+.vscode/
+
+# models (ВАЖНО)
+models/
+
+# logs
+*.log
+
+# system
+.DS_Store
+Thumbs.db
