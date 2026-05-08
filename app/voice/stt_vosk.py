@@ -14,22 +14,6 @@ from app.core.fuzzy_matcher import find_fuzzy_match
 
 
 class VoskSTT:
-    """
-    Потоковое распознавание речи через Vosk + sounddevice.
-
-    Поддерживает два режима:
-    1. ALWAYS:
-       - обычные команды принимаются сразу.
-
-    2. WAKE_WORD:
-       - сначала ждём кодовое слово.
-       - после кодового слова принимаем следующую команду.
-
-    Также:
-    - во время речи ассистента обычные команды игнорируются;
-    - команда "стоп" может проверяться через partial-result отдельно.
-    """
-
     def __init__(
         self,
         model_path: str | Path,
@@ -52,8 +36,9 @@ class VoskSTT:
 
         self.model: Optional[vosk.Model] = None
         self.audio_queue: queue.Queue[bytes] = queue.Queue()
-
         self.stream: Optional[sd.RawInputStream] = None
+
+        self.paused = False
 
     def load(self) -> None:
         if not self.model_path.exists():
@@ -76,7 +61,21 @@ class VoskSTT:
 
         print("✅ Vosk готов. Микрофон слушает.")
 
+    def pause(self) -> None:
+        self.paused = True
+        self.state.wake_word_active.clear()
+        self.clear_queue()
+        print("🔇 STT поставлен на паузу.")
+
+    def resume(self) -> None:
+        self.paused = False
+        self.clear_queue()
+        print("🎤 STT снова активен.")
+
     def _audio_callback(self, indata, frames, time_info, status) -> None:
+        if self.paused or self.state.shutdown.is_set():
+            return
+
         if status:
             print(f"⚠️ Audio status: {status}")
 
@@ -86,6 +85,11 @@ class VoskSTT:
         if self.model is None:
             raise RuntimeError("VoskSTT.load() must be called first")
 
+        if self.paused:
+            self.clear_queue()
+            time.sleep(0.1)
+            return ""
+
         recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
 
         last_listening_print = 0.0
@@ -94,6 +98,11 @@ class VoskSTT:
 
         while not self.state.shutdown.is_set():
             now = time.time()
+
+            if self.paused:
+                self.clear_queue()
+                time.sleep(0.1)
+                return ""
 
             if self.state.ignore_regular_stt.is_set() or self.state.should_ignore_stt_now():
                 self.clear_queue()
@@ -129,8 +138,16 @@ class VoskSTT:
             except queue.Empty:
                 continue
 
+            if self.paused:
+                self.clear_queue()
+                return ""
+
             if recognizer.AcceptWaveform(audio):
                 text = self._extract_text(recognizer.Result(), key="text")
+
+                if self.paused:
+                    self.clear_queue()
+                    return ""
 
                 if text:
                     print(f"🧾 Vosk final: {text}")
@@ -171,8 +188,7 @@ class VoskSTT:
 
                     self.state.wake_word_active.clear()
                     return text
-                
-                
+
         return ""
 
     def listen_for_stop(self) -> bool:
@@ -199,9 +215,6 @@ class VoskSTT:
                 if self._contains_any(text, self.stop_words):
                     if self.state.recent_tts_contains_any(self.stop_words):
                         print(f"🔇 Игнорирую свой стоп final: {text}")
-
-                        # ВАЖНО: сбрасываем распознаватель,
-                        # чтобы он не тащил старую фразу дальше.
                         recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
                         recognizer.SetWords(False)
                         continue
@@ -217,8 +230,6 @@ class VoskSTT:
                 if self._contains_any(partial, self.stop_words):
                     if self.state.recent_tts_contains_any(self.stop_words):
                         print(f"🔇 Игнорирую свой стоп partial: {partial}")
-
-                        # ВАЖНО: сбрасываем partial-фразу
                         recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
                         recognizer.SetWords(False)
                         continue
@@ -226,7 +237,7 @@ class VoskSTT:
                     return True
 
         return False
-    
+
     def clear_queue(self) -> None:
         while not self.audio_queue.empty():
             try:
@@ -243,7 +254,7 @@ class VoskSTT:
 
     def _contains_any(self, text: str, words: list[str]) -> bool:
         return any(word in text for word in words)
-    
+
     def _find_wake_word(self, text: str) -> tuple[str | None, str | None]:
         text_words = text.split()
 
