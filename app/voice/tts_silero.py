@@ -78,6 +78,7 @@ class SileroTTS:
             if (cleaned := clean_text(chunk))
         ]
 
+        self.state.reset_tts_interrupted()
         self.state.stop_speaking.clear()
         self.state.is_speaking.set()
         self.state.ignore_regular_stt.set()
@@ -103,6 +104,7 @@ class SileroTTS:
 
     def stop(self) -> None:
         print("🛑 Останавливаю озвучку.")
+        self.state.mark_tts_interrupted()
         self.state.stop_speaking.set()
 
         try:

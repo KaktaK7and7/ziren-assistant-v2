@@ -19,6 +19,8 @@ class AudioState:
         self.current_tts_chunk = ""
         self.recent_tts_chunks: list[tuple[str, float]] = []
         self.current_tts_lock = Lock()
+        self.tts_interrupted_lock = Lock()
+        self.tts_was_interrupted = False
 
         self.echo_ignore_seconds = 2.0
 
@@ -79,6 +81,18 @@ class AudioState:
             self.current_tts_text = ""
             self.current_tts_chunk = ""
             self.recent_tts_chunks.clear()
+
+    def reset_tts_interrupted(self) -> None:
+        with self.tts_interrupted_lock:
+            self.tts_was_interrupted = False
+
+    def mark_tts_interrupted(self) -> None:
+        with self.tts_interrupted_lock:
+            self.tts_was_interrupted = True
+
+    def was_tts_interrupted(self) -> bool:
+        with self.tts_interrupted_lock:
+            return self.tts_was_interrupted
 
     def _cleanup_recent_chunks_locked(self) -> None:
         now = time.time()

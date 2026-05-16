@@ -1,4 +1,5 @@
 import json
+import random
 import threading
 import time
 from getpass import getpass
@@ -24,6 +25,14 @@ VOSK_MODEL_PATH = BASE_DIR / "models" / "vosk" / "vosk-model-small-ru-0.22"
 
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8787
+
+AI_WAKE_RESPONSES = [
+    "Я здесь.",
+    "Слушаю тебя.",
+    "Да, я рядом.",
+    "Говори, я слушаю.",
+    "Я с тобой.",
+]
 
 
 class AssistantControlState:
@@ -219,12 +228,30 @@ def main() -> None:
     )
 
     local_api_server = start_local_api(control, stt)
+    ai_followup_waiting = False
 
     def after_tts_finished() -> None:
         add_log("TTS закончил говорить")
         emit_event("tts.finished")
         state.ignore_stt_for(0.8)
         stt.clear_queue()
+
+    def after_ai_tts_finished() -> None:
+        nonlocal ai_followup_waiting
+
+        was_interrupted = state.was_tts_interrupted()
+        after_tts_finished()
+
+        if was_interrupted:
+            ai_followup_waiting = False
+            add_log("AI follow-up пропущен", meta={"reason": "tts_interrupted"})
+            emit_event("ai.followup.skipped", payload={"reason": "tts_interrupted"})
+            return
+
+        ai_followup_waiting = True
+        stt.start_ai_followup(timeout_seconds=5.0)
+        add_log("AI follow-up режим включен", meta={"timeout_seconds": 5})
+        emit_event("ai.followup.started", payload={"timeout_seconds": 5})
 
     def start_stop_listener() -> None:
         add_log("Слушатель стоп-слова запущен")
@@ -286,7 +313,13 @@ def main() -> None:
             elif text.startswith("__ai__:"):
                 current_mode = "ai"
                 text = text.replace("__ai__:", "", 1)
-                emit_event("wake_word.detected", payload={"mode": "ai", "word": "мелисса"})
+
+                if ai_followup_waiting:
+                    ai_followup_waiting = False
+                    add_log("AI follow-up фраза распознана", meta={"text": text})
+                    emit_event("ai.followup.captured", payload={"text": text})
+                else:
+                    emit_event("wake_word.detected", payload={"mode": "ai", "word": "мелисса"})
 
             elif text == "__wake_command__":
                 current_mode = "command"
@@ -309,7 +342,7 @@ def main() -> None:
 
                 add_log("TTS начал говорить", meta={"source": "wake_ai"})
                 emit_event("tts.started", payload={"source": "wake_ai"})
-                tts.speak("Я здесь.", on_finish=after_tts_finished)
+                tts.speak(random.choice(AI_WAKE_RESPONSES), on_finish=after_tts_finished)
                 continue
 
             elif text == "__command_timeout__":
@@ -319,6 +352,13 @@ def main() -> None:
                 add_log("TTS начал говорить", meta={"source": "command_timeout"})
                 emit_event("tts.started", payload={"source": "command_timeout"})
                 tts.speak("Долго думаешь.", on_finish=after_tts_finished)
+                continue
+
+            elif text == "__ai_followup_timeout__":
+                ai_followup_waiting = False
+                print("⌛ AI follow-up timeout.")
+                add_log("AI follow-up timeout")
+                emit_event("ai.followup.timeout")
                 continue
 
             print(f"👤 Ты сказал: {text}")
@@ -399,7 +439,7 @@ def main() -> None:
 
                     add_log("TTS начал говорить", meta={"source": "ai_answer"})
                     emit_event("tts.started", payload={"source": "ai_answer"})
-                    tts.speak(answer, on_finish=after_tts_finished)
+                    tts.speak(answer, on_finish=after_ai_tts_finished)
                     start_stop_listener()
 
                 except Exception as e:

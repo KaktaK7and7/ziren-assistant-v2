@@ -10,7 +10,7 @@ import vosk
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
 from app.voice.text_utils import normalize_text
-from app.core.fuzzy_matcher import find_fuzzy_match
+from app.core.fuzzy_matcher import find_fuzzy_match, similarity
 
 
 class VoskSTT:
@@ -39,6 +39,9 @@ class VoskSTT:
         self.stream: Optional[sd.RawInputStream] = None
 
         self.paused = False
+        self.pending_wake_mode: str | None = None
+        self.pending_wake_timeout_seconds = 5.0
+        self.pending_wake_timeout_marker = "__command_timeout__"
 
     def load(self) -> None:
         if not self.model_path.exists():
@@ -63,14 +66,25 @@ class VoskSTT:
 
     def pause(self) -> None:
         self.paused = True
+        self.pending_wake_mode = None
+        self.pending_wake_timeout_marker = "__command_timeout__"
         self.state.wake_word_active.clear()
         self.clear_queue()
         print("🔇 STT поставлен на паузу.")
 
     def resume(self) -> None:
         self.paused = False
+        self.pending_wake_mode = None
+        self.pending_wake_timeout_marker = "__command_timeout__"
         self.clear_queue()
         print("🎤 STT снова активен.")
+
+    def start_ai_followup(self, timeout_seconds: float = 5.0) -> None:
+        self.pending_wake_mode = "ai"
+        self.pending_wake_timeout_seconds = timeout_seconds
+        self.pending_wake_timeout_marker = "__ai_followup_timeout__"
+        self.state.wake_word_active.set()
+        self.clear_queue()
 
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         if self.paused or self.state.shutdown.is_set():
@@ -94,7 +108,6 @@ class VoskSTT:
 
         last_listening_print = 0.0
         command_wait_started_at = 0.0
-        command_timeout_seconds = 5.0
 
         while not self.state.shutdown.is_set():
             now = time.time()
@@ -120,11 +133,15 @@ class VoskSTT:
                 self.state.listening_mode == ListeningMode.WAKE_WORD
                 and self.state.wake_word_active.is_set()
                 and command_wait_started_at > 0.0
-                and now - command_wait_started_at >= command_timeout_seconds
+                and now - command_wait_started_at >= self.pending_wake_timeout_seconds
             ):
+                timeout_marker = self.pending_wake_timeout_marker
                 self.state.wake_word_active.clear()
+                self.pending_wake_mode = None
+                self.pending_wake_timeout_seconds = 5.0
+                self.pending_wake_timeout_marker = "__command_timeout__"
                 self.clear_queue()
-                return "__command_timeout__"
+                return timeout_marker
 
             if now - last_listening_print >= 5:
                 if self.state.listening_mode == ListeningMode.WAKE_WORD and not self.state.wake_word_active.is_set():
@@ -168,6 +185,9 @@ class VoskSTT:
                             if command_after_wake:
                                 return f"__command__:{command_after_wake}"
 
+                            self.pending_wake_mode = "command"
+                            self.pending_wake_timeout_seconds = 5.0
+                            self.pending_wake_timeout_marker = "__command_timeout__"
                             self.state.wake_word_active.set()
                             command_wait_started_at = time.time()
                             self.clear_queue()
@@ -179,6 +199,9 @@ class VoskSTT:
                             if command_after_wake:
                                 return f"__ai__:{command_after_wake}"
 
+                            self.pending_wake_mode = "ai"
+                            self.pending_wake_timeout_seconds = 5.0
+                            self.pending_wake_timeout_marker = "__command_timeout__"
                             self.state.wake_word_active.set()
                             command_wait_started_at = time.time()
                             self.clear_queue()
@@ -186,8 +209,16 @@ class VoskSTT:
 
                         continue
 
+                    mode = self.pending_wake_mode or "command"
                     self.state.wake_word_active.clear()
-                    return text
+                    self.pending_wake_mode = None
+                    self.pending_wake_timeout_seconds = 5.0
+                    self.pending_wake_timeout_marker = "__command_timeout__"
+
+                    if mode == "ai":
+                        return f"__ai__:{text}"
+
+                    return f"__command__:{text}"
 
         return ""
 
@@ -256,21 +287,32 @@ class VoskSTT:
         return any(word in text for word in words)
 
     def _find_wake_word(self, text: str) -> tuple[str | None, str | None]:
-        text_words = text.split()
+        normalized_text = normalize_text(text)
+        text_words = normalized_text.split()
+        wake_threshold = 0.72
+
+        for variant in self.command_wake_words:
+            if variant in normalized_text:
+                return "command", variant
+
+        for variant in self.ai_wake_words:
+            if variant in normalized_text:
+                return "ai", variant
 
         for word in text_words:
             command_match = find_fuzzy_match(
                 text=word,
                 variants=self.command_wake_words,
-                threshold=0.75,
+                threshold=wake_threshold,
             )
             if command_match:
                 return "command", command_match
 
+        for word in text_words:
             ai_match = find_fuzzy_match(
                 text=word,
                 variants=self.ai_wake_words,
-                threshold=0.75,
+                threshold=wake_threshold,
             )
             if ai_match:
                 return "ai", ai_match
@@ -278,11 +320,35 @@ class VoskSTT:
         return None, None
 
     def _remove_wake_word(self, text: str, wake_word: str) -> str:
-        command = text.replace(wake_word, "", 1)
+        normalized_text = normalize_text(text)
+        normalized_wake_word = normalize_text(wake_word)
+
+        if normalized_wake_word in normalized_text:
+            command = normalized_text.replace(normalized_wake_word, "", 1)
+            return normalize_text(command)
+
+        words = normalized_text.split()
+        best_index = None
+        best_score = 0.0
+
+        for index, word in enumerate(words):
+            score = similarity(word, normalized_wake_word)
+
+            if score > best_score:
+                best_score = score
+                best_index = index
+
+        if best_index is not None and best_score >= 0.72:
+            words.pop(best_index)
+            return normalize_text(" ".join(words))
+
+        command = normalized_text.replace(normalized_wake_word, "", 1)
         return normalize_text(command)
 
     def close(self) -> None:
         self.state.shutdown.set()
+        self.pending_wake_mode = None
+        self.pending_wake_timeout_marker = "__command_timeout__"
 
         if self.stream:
             self.stream.stop()
