@@ -7,6 +7,10 @@ from pathlib import Path
 
 from app.api.auth_client import AuthClient
 from app.api.neuro_client import NeuroClient
+from app.events.event_bus import emit_event, get_events
+from app.features.feature_gate import FeatureGate
+from app.modules.registry import create_default_registry
+from app.router.command_router import CommandRouter
 from app.storage.local_store import save_session
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
@@ -98,6 +102,10 @@ def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHT
                 self.send_json({"logs": get_logs()})
                 return
 
+            if self.path == "/events":
+                self.send_json({"events": get_events()})
+                return
+
             self.send_json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:
@@ -108,10 +116,12 @@ def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHT
                     stt.resume()
                     print("🎤 Прослушка включена через GUI")
                     add_log("Прослушка включена", meta={"source": "gui"})
+                    emit_event("listening.enabled", payload={"source": "gui"})
                 else:
                     stt.pause()
                     print("🔇 Прослушка выключена через GUI")
                     add_log("Прослушка выключена", meta={"source": "gui"})
+                    emit_event("listening.disabled", payload={"source": "gui"})
 
                 self.send_json(status)
                 return
@@ -121,6 +131,7 @@ def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHT
                 stt.resume()
                 print("🎤 Прослушка включена через GUI")
                 add_log("Прослушка включена", meta={"source": "gui"})
+                emit_event("listening.enabled", payload={"source": "gui"})
                 self.send_json(status)
                 return
 
@@ -129,6 +140,7 @@ def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHT
                 stt.pause()
                 print("🔇 Прослушка выключена через GUI")
                 add_log("Прослушка выключена", meta={"source": "gui"})
+                emit_event("listening.disabled", payload={"source": "gui"})
                 self.send_json(status)
                 return
 
@@ -143,6 +155,7 @@ def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHT
 
     print(f"🌐 Local API: http://{LOCAL_API_HOST}:{LOCAL_API_PORT}")
     add_log("Local API запущен", meta={"url": f"http://{LOCAL_API_HOST}:{LOCAL_API_PORT}"})
+    emit_event("local_api.started", payload={"url": f"http://{LOCAL_API_HOST}:{LOCAL_API_PORT}"})
 
     return server
 
@@ -152,9 +165,11 @@ def main() -> None:
 
     state = AudioState()
     add_log("Ассистент запущен")
+    emit_event("assistant.started")
 
     state.set_mode(ListeningMode.WAKE_WORD)
     add_log("Режим WAKE_WORD")
+    emit_event("assistant.mode.changed", payload={"mode": "WAKE_WORD"})
 
     auth = AuthClient()
     session = auth.get_saved_session()
@@ -179,6 +194,14 @@ def main() -> None:
         session_id=session.get("session_id"),
     )
     add_log("NeuroClient готов", meta={"user_id": session.get("user_id")})
+    emit_event("ai.client.ready")
+
+    command_router = CommandRouter(
+        registry=create_default_registry(),
+        feature_gate=FeatureGate(),
+    )
+    add_log("CommandRouter готов")
+    emit_event("command.router.ready")
 
     stt = VoskSTT(
         model_path=VOSK_MODEL_PATH,
@@ -199,6 +222,7 @@ def main() -> None:
 
     def after_tts_finished() -> None:
         add_log("TTS закончил говорить")
+        emit_event("tts.finished")
         state.ignore_stt_for(0.8)
         stt.clear_queue()
 
@@ -213,10 +237,12 @@ def main() -> None:
     add_log("Загрузка Vosk...")
     stt.load()
     add_log("Vosk готов")
+    emit_event("stt.ready")
 
     add_log("Загрузка Silero...")
     tts.load()
     add_log("Silero готов")
+    emit_event("tts.ready")
 
     print("🎤 Режим: WAKE_WORD")
     print("🧠 Нейросеть: мелисса")
@@ -224,6 +250,7 @@ def main() -> None:
     print("🛑 Во время речи скажи: стоп")
 
     add_log("Ассистент готов к работе")
+    emit_event("assistant.ready")
 
     last_wait_log = 0.0
 
@@ -254,18 +281,22 @@ def main() -> None:
             if text.startswith("__command__:"):
                 current_mode = "command"
                 text = text.replace("__command__:", "", 1)
+                emit_event("wake_word.detected", payload={"mode": "command", "word": "змея"})
 
             elif text.startswith("__ai__:"):
                 current_mode = "ai"
                 text = text.replace("__ai__:", "", 1)
+                emit_event("wake_word.detected", payload={"mode": "ai", "word": "мелисса"})
 
             elif text == "__wake_command__":
                 current_mode = "command"
 
                 print("⚡ Змея услышала кодовое слово.")
                 add_log("Wake word услышан", meta={"type": "command", "word": "змея"})
+                emit_event("wake_word.detected", payload={"mode": "command", "word": "змея"})
 
                 add_log("TTS начал говорить", meta={"source": "wake_command"})
+                emit_event("tts.started", payload={"source": "wake_command"})
                 tts.speak("Слушаю команду.", on_finish=after_tts_finished)
                 continue
 
@@ -274,8 +305,10 @@ def main() -> None:
 
                 print("🧠 Мелисса услышала кодовое слово.")
                 add_log("Wake word услышан", meta={"type": "ai", "word": "мелисса"})
+                emit_event("wake_word.detected", payload={"mode": "ai", "word": "мелисса"})
 
                 add_log("TTS начал говорить", meta={"source": "wake_ai"})
+                emit_event("tts.started", payload={"source": "wake_ai"})
                 tts.speak("Я здесь.", on_finish=after_tts_finished)
                 continue
 
@@ -284,11 +317,13 @@ def main() -> None:
                 add_log("Команда не поступила", level="warn")
 
                 add_log("TTS начал говорить", meta={"source": "command_timeout"})
+                emit_event("tts.started", payload={"source": "command_timeout"})
                 tts.speak("Долго думаешь.", on_finish=after_tts_finished)
                 continue
 
             print(f"👤 Ты сказал: {text}")
             add_log("Речь распознана", meta={"text": text, "mode": current_mode})
+            emit_event("speech.recognized", payload={"text": text, "mode": current_mode})
 
             if "выход" in text:
                 print("👋 Завершаю.")
@@ -308,6 +343,7 @@ def main() -> None:
                 )
 
                 add_log("TTS начал говорить", meta={"source": "tts_test"})
+                emit_event("tts.started", payload={"source": "tts_test"})
                 tts.speak(long_text, on_finish=after_tts_finished)
                 start_stop_listener()
                 continue
@@ -315,15 +351,41 @@ def main() -> None:
             if current_mode == "command":
                 print("⚡ Локальная команда")
                 add_log("Локальная команда распознана", meta={"text": text})
+                emit_event("command.received", payload={"text": text})
+
+                route_result = command_router.route(text)
+
+                if route_result:
+                    response_text = route_result.response.text
+                    add_log(
+                        "Команда обработана модулем",
+                        meta={
+                            "text": text,
+                            "feature_id": route_result.module.feature_id,
+                        },
+                    )
+                    emit_event(
+                        "command.module.executed",
+                        payload={
+                            "text": text,
+                            "feature_id": route_result.module.feature_id,
+                        },
+                    )
+                else:
+                    response_text = "Команда пока не распознана."
+                    add_log("Команда не распознана", level="warn", meta={"text": text})
+                    emit_event("command.unknown", payload={"text": text}, level="warn")
 
                 add_log("TTS начал говорить", meta={"source": "local_command"})
-                tts.speak("Команда выполнена.", on_finish=after_tts_finished)
+                emit_event("tts.started", payload={"source": "local_command"})
+                tts.speak(response_text, on_finish=after_tts_finished)
                 start_stop_listener()
                 continue
 
             if current_mode == "ai":
                 print("🧠 Отправляю в нейро-модуль...")
                 add_log("AI-запрос отправлен", meta={"text": text})
+                emit_event("ai.request.started", payload={"text": text})
 
                 try:
                     answer = neuro.send_message(text)
@@ -333,16 +395,20 @@ def main() -> None:
 
                     print(f"🤖 Мелисса: {answer}")
                     add_log("AI-ответ получен", meta={"answer": answer[:250]})
+                    emit_event("ai.response.received", payload={"answer_preview": answer[:250]})
 
                     add_log("TTS начал говорить", meta={"source": "ai_answer"})
+                    emit_event("tts.started", payload={"source": "ai_answer"})
                     tts.speak(answer, on_finish=after_tts_finished)
                     start_stop_listener()
 
                 except Exception as e:
                     print(f"❌ Ошибка нейро-модуля: {e}")
                     add_log("Ошибка нейро-модуля", level="error", meta={"error": str(e)})
+                    emit_event("ai.error", payload={"error": str(e)}, level="error")
 
                     add_log("TTS начал говорить", meta={"source": "neuro_error"})
+                    emit_event("tts.started", payload={"source": "neuro_error"})
                     tts.speak(
                         "Не смогла связаться с нейро-модулем.",
                         on_finish=after_tts_finished,
@@ -356,6 +422,7 @@ def main() -> None:
 
     finally:
         add_log("Ассистент завершает работу")
+        emit_event("assistant.stopping")
 
         control.stop()
         local_api_server.shutdown()

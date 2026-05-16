@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.log_bus import add_log, get_logs
+from app.events.event_bus import get_events
 
 app = FastAPI(title="Ziren Assistant Local API")
 
@@ -25,6 +26,13 @@ app.add_middleware(
 def logs():
     return {
         "logs": get_logs()
+    }
+
+
+@app.get("/events")
+def events():
+    return {
+        "events": get_events()
     }
 
 
