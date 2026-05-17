@@ -348,10 +348,7 @@ def main() -> None:
             elif text == "__command_timeout__":
                 print("⌛ Команда не поступила.")
                 add_log("Команда не поступила", level="warn")
-
-                add_log("TTS начал говорить", meta={"source": "command_timeout"})
-                emit_event("tts.started", payload={"source": "command_timeout"})
-                tts.speak("Долго думаешь.", on_finish=after_tts_finished)
+                emit_event("command.timeout", level="warn")
                 continue
 
             elif text == "__ai_followup_timeout__":
