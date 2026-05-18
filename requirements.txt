@@ -9,3 +9,5 @@ httpx
 python-dotenv
 fastapi
 uvicorn
+pycaw
+comtypes

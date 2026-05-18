@@ -1,5 +1,6 @@
 from app.modules.base import AssistantModule
 from app.modules.system.test_module import SystemTestModule
+from app.modules.system.volume_module import SystemVolumeModule
 
 
 class ModuleRegistry:
@@ -16,4 +17,5 @@ class ModuleRegistry:
 def create_default_registry() -> ModuleRegistry:
     registry = ModuleRegistry()
     registry.register(SystemTestModule())
+    registry.register(SystemVolumeModule())
     return registry
