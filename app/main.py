@@ -10,7 +10,7 @@ from app.api.auth_client import AuthClient
 from app.api.neuro_client import NeuroClient
 from app.events.event_bus import emit_event, get_events
 from app.features.feature_gate import FeatureGate
-from app.modules.registry import create_default_registry
+from app.modules.registry import ModuleRegistry, create_default_registry
 from app.router.command_router import CommandRouter
 from app.storage.local_store import save_session
 from app.voice.audio_state import AudioState
@@ -78,7 +78,11 @@ class AssistantControlState:
             self.listening_enabled = False
 
 
-def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHTTPServer:
+def start_local_api(
+    control: AssistantControlState,
+    stt: VoskSTT,
+    registry: ModuleRegistry,
+) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:
             return
@@ -113,6 +117,10 @@ def start_local_api(control: AssistantControlState, stt: VoskSTT) -> ThreadingHT
 
             if self.path == "/events":
                 self.send_json({"events": get_events()})
+                return
+
+            if self.path == "/features/triggers":
+                self.send_json({"features": registry.get_feature_trigger_data()})
                 return
 
             self.send_json({"error": "not found"}, status=404)
@@ -205,8 +213,10 @@ def main() -> None:
     add_log("NeuroClient готов", meta={"user_id": session.get("user_id")})
     emit_event("ai.client.ready")
 
+    registry = create_default_registry()
+
     command_router = CommandRouter(
-        registry=create_default_registry(),
+        registry=registry,
         feature_gate=FeatureGate(),
     )
     add_log("CommandRouter готов")
@@ -227,7 +237,7 @@ def main() -> None:
         sample_rate=48000,
     )
 
-    local_api_server = start_local_api(control, stt)
+    local_api_server = start_local_api(control, stt, registry)
     ai_followup_waiting = False
 
     def after_tts_finished() -> None:

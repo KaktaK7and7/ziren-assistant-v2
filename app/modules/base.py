@@ -11,7 +11,12 @@ class ModuleResponse:
 
 class AssistantModule(ABC):
     feature_id: str
+    display_name: str = "Без названия"
     plan: Plan = Plan.FREE
+    default_triggers: list[str] = []
+
+    def get_triggers(self) -> list[str]:
+        return self.default_triggers
 
     @abstractmethod
     def can_handle(self, text: str) -> bool:

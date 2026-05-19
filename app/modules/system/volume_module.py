@@ -10,25 +10,24 @@ from app.modules.base import AssistantModule, ModuleResponse
 
 class SystemVolumeModule(AssistantModule):
     feature_id = "system.volume"
+    display_name = "Управление громкостью"
     plan = Plan.FREE
+    default_triggers = [
+        "громче",
+        "тише",
+        "выключи звук",
+        "включи звук",
+        "убери звук",
+        "верни звук",
+        "поставь громкость",
+        "сделай громкость",
+        "громкость на",
+    ]
 
     def can_handle(self, text: str) -> bool:
         text = text.strip().lower()
 
-        return any(
-            phrase in text
-            for phrase in [
-                "громче",
-                "тише",
-                "выключи звук",
-                "включи звук",
-                "убери звук",
-                "верни звук",
-                "поставь громкость",
-                "сделай громкость",
-                "громкость на",
-            ]
-        )
+        return any(phrase in text for phrase in self.get_triggers())
 
     def handle(self, text: str) -> ModuleResponse:
         try:
