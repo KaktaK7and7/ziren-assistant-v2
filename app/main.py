@@ -12,6 +12,7 @@ from app.events.event_bus import emit_event, get_events
 from app.features.feature_gate import FeatureGate
 from app.modules.registry import ModuleRegistry, create_default_registry
 from app.router.command_router import CommandRouter
+from app.settings.trigger_store import TriggerStore
 from app.storage.local_store import save_session
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
@@ -82,6 +83,7 @@ def start_local_api(
     control: AssistantControlState,
     stt: VoskSTT,
     registry: ModuleRegistry,
+    trigger_store: TriggerStore,
 ) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:
@@ -98,6 +100,42 @@ def start_local_api(
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def send_bad_request(self, error: str) -> None:
+            self.send_json({"ok": False, "error": error}, status=400)
+
+        def read_json_body(self) -> dict | None:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return None
+
+            if content_length <= 0:
+                return None
+
+            try:
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode("utf-8"))
+            except Exception:
+                return None
+
+            if not isinstance(data, dict):
+                return None
+
+            return data
+
+        def module_trigger_response(self, feature_id: str) -> dict | None:
+            module = registry.get_module_by_feature_id(feature_id)
+
+            if module is None:
+                return None
+
+            return {
+                "feature_id": module.feature_id,
+                "display_name": module.display_name,
+                "plan": module.plan.value if hasattr(module.plan, "value") else str(module.plan),
+                "triggers": module.get_triggers(),
+            }
 
         def do_OPTIONS(self) -> None:
             self.send_json({"ok": True})
@@ -123,9 +161,49 @@ def start_local_api(
                 self.send_json({"features": registry.get_feature_trigger_data()})
                 return
 
+            if self.path == "/features/triggers/defaults":
+                self.send_json({"features": registry.get_feature_trigger_defaults()})
+                return
+
             self.send_json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:
+            if self.path == "/features/triggers":
+                data = self.read_json_body()
+
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                feature_id = data.get("feature_id")
+                triggers = data.get("triggers")
+
+                if not isinstance(feature_id, str) or not feature_id.strip():
+                    self.send_bad_request("feature_id must be a non-empty string")
+                    return
+
+                if not isinstance(triggers, list) or not all(
+                    isinstance(trigger, str) for trigger in triggers
+                ):
+                    self.send_bad_request("triggers must be a list of strings")
+                    return
+
+                module = registry.get_module_by_feature_id(feature_id)
+
+                if module is None:
+                    self.send_bad_request("unknown feature_id")
+                    return
+
+                trigger_store.set(feature_id, triggers)
+                feature = self.module_trigger_response(feature_id)
+
+                if feature is None:
+                    self.send_bad_request("unknown feature_id")
+                    return
+
+                self.send_json({"ok": True, "feature": feature})
+                return
+
             if self.path == "/listening/toggle":
                 status = control.toggle_listening()
 
@@ -213,7 +291,8 @@ def main() -> None:
     add_log("NeuroClient готов", meta={"user_id": session.get("user_id")})
     emit_event("ai.client.ready")
 
-    registry = create_default_registry()
+    trigger_store = TriggerStore()
+    registry = create_default_registry(trigger_store=trigger_store)
 
     command_router = CommandRouter(
         registry=registry,
@@ -237,7 +316,7 @@ def main() -> None:
         sample_rate=48000,
     )
 
-    local_api_server = start_local_api(control, stt, registry)
+    local_api_server = start_local_api(control, stt, registry, trigger_store)
     ai_followup_waiting = False
 
     def after_tts_finished() -> None:
