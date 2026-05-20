@@ -12,60 +12,85 @@ class SystemVolumeModule(AssistantModule):
     feature_id = "system.volume"
     display_name = "Управление громкостью"
     plan = Plan.FREE
-    default_triggers = [
-        "громче",
-        "тише",
-        "выключи звук",
-        "включи звук",
-        "убери звук",
-        "верни звук",
-        "поставь громкость",
-        "сделай громкость",
-        "громкость на",
-    ]
+    default_trigger_groups = {
+        "volume.up": {
+            "display_name": "Увеличить громкость",
+            "triggers": ["громче", "сделай громче"],
+        },
+        "volume.down": {
+            "display_name": "Уменьшить громкость",
+            "triggers": ["тише", "сделай тише"],
+        },
+        "volume.mute": {
+            "display_name": "Выключить звук",
+            "triggers": ["выключи звук", "убери звук"],
+        },
+        "volume.unmute": {
+            "display_name": "Включить звук",
+            "triggers": ["включи звук", "верни звук"],
+        },
+        "volume.set": {
+            "display_name": "Установить громкость",
+            "triggers": ["поставь громкость", "сделай громкость", "громкость на"],
+        },
+    }
 
     def can_handle(self, text: str) -> bool:
         text = text.strip().lower()
 
-        return any(phrase in text for phrase in self.get_triggers())
+        return any(trigger in text for trigger in self.get_triggers())
 
     def handle(self, text: str) -> ModuleResponse:
         try:
             return self._handle_volume(text)
         except Exception as error:
-            return ModuleResponse(text=f"Не смог изменить громкость. Ошибка: {error}")
+            return ModuleResponse(
+                text=f"Не смог изменить громкость. Ошибка: {error}"
+            )
 
     def _handle_volume(self, text: str) -> ModuleResponse:
         text = text.strip().lower()
         volume = self._get_volume()
 
-        if "выключи звук" in text or "убери звук" in text:
+        if self._matches_action(text, "volume.mute"):
             volume.SetMute(1, None)
             return ModuleResponse(text="Звук выключен.")
 
-        if "включи звук" in text or "верни звук" in text:
+        if self._matches_action(text, "volume.unmute"):
             volume.SetMute(0, None)
             return ModuleResponse(text="Звук включён.")
 
-        percent = self._extract_percent(text)
+        if self._matches_action(text, "volume.set"):
+            percent = self._extract_percent(text)
 
-        if percent is not None:
+            if percent is None:
+                return ModuleResponse(text="Не понял, какую громкость поставить.")
+
             self._set_volume_percent(volume, percent)
-            return ModuleResponse(text=f"Громкость установлена на {percent} процентов.")
+            return ModuleResponse(
+                text=f"Громкость установлена на {percent} процентов."
+            )
 
         current = self._get_current_percent(volume)
 
-        if "громче" in text:
+        if self._matches_action(text, "volume.up"):
             new_value = min(100, current + 10)
             self._set_volume_percent(volume, new_value)
-            return ModuleResponse(text=f"Сделал громче. Сейчас {new_value} процентов.")
+            return ModuleResponse(
+                text=f"Сделал громче. Сейчас {new_value} процентов."
+            )
 
-        if "тише" in text:
+        if self._matches_action(text, "volume.down"):
             new_value = max(0, current - 10)
             self._set_volume_percent(volume, new_value)
-            return ModuleResponse(text=f"Сделал тише. Сейчас {new_value} процентов.")
+            return ModuleResponse(
+                text=f"Сделал тише. Сейчас {new_value} процентов."
+            )
 
         return ModuleResponse(text="Не понял команду громкости.")
+
+    def _matches_action(self, text: str, action_id: str) -> bool:
+        return any(trigger in text for trigger in self.get_action_triggers(action_id))
 
     def _get_volume(self):
         speakers = AudioUtilities.GetSpeakers()
@@ -160,14 +185,12 @@ class SystemVolumeModule(AssistantModule):
             **units,
         }
 
-        # Сначала составные: "двадцать пять", "семьдесят два"
         for index, word in enumerate(words[:-1]):
             next_word = words[index + 1]
 
             if word in tens and next_word in units:
                 return self._clamp_percent(tens[word] + units[next_word])
 
-        # Потом одиночные: "пятьдесят", "десять", "сто"
         for word in words:
             if word in singles:
                 return self._clamp_percent(singles[word])

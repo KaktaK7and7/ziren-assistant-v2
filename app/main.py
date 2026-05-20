@@ -130,12 +130,7 @@ def start_local_api(
             if module is None:
                 return None
 
-            return {
-                "feature_id": module.feature_id,
-                "display_name": module.display_name,
-                "plan": module.plan.value if hasattr(module.plan, "value") else str(module.plan),
-                "triggers": module.get_triggers(),
-            }
+            return registry.build_feature_trigger_response(module)
 
         def do_OPTIONS(self) -> None:
             self.send_json({"ok": True})
@@ -176,16 +171,11 @@ def start_local_api(
                     return
 
                 feature_id = data.get("feature_id")
+                trigger_groups = data.get("trigger_groups")
                 triggers = data.get("triggers")
 
                 if not isinstance(feature_id, str) or not feature_id.strip():
                     self.send_bad_request("feature_id must be a non-empty string")
-                    return
-
-                if not isinstance(triggers, list) or not all(
-                    isinstance(trigger, str) for trigger in triggers
-                ):
-                    self.send_bad_request("triggers must be a list of strings")
                     return
 
                 module = registry.get_module_by_feature_id(feature_id)
@@ -194,7 +184,39 @@ def start_local_api(
                     self.send_bad_request("unknown feature_id")
                     return
 
-                trigger_store.set(feature_id, triggers)
+                if trigger_groups is not None:
+                    if not isinstance(trigger_groups, dict):
+                        self.send_bad_request("trigger_groups must be an object")
+                        return
+
+                    default_groups = module.get_default_trigger_groups()
+                    groups_to_save: dict[str, list[str]] = {}
+
+                    for action_id, group_triggers in trigger_groups.items():
+                        if action_id not in default_groups:
+                            self.send_bad_request(f"unknown action_id: {action_id}")
+                            return
+
+                        if not isinstance(group_triggers, list) or not all(
+                            isinstance(trigger, str) for trigger in group_triggers
+                        ):
+                            self.send_bad_request(
+                                "trigger_groups values must be lists of strings"
+                            )
+                            return
+
+                        groups_to_save[action_id] = group_triggers
+
+                    trigger_store.set_groups(feature_id, groups_to_save)
+                else:
+                    if not isinstance(triggers, list) or not all(
+                        isinstance(trigger, str) for trigger in triggers
+                    ):
+                        self.send_bad_request("triggers must be a list of strings")
+                        return
+
+                    trigger_store.set(feature_id, triggers)
+
                 feature = self.module_trigger_response(feature_id)
 
                 if feature is None:
