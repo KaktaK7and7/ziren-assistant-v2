@@ -1,4 +1,5 @@
 from app.modules.base import AssistantModule
+from app.modules.system.app_launcher_module import SystemAppLauncherModule
 from app.modules.system.test_module import SystemTestModule
 from app.modules.system.volume_module import SystemVolumeModule
 from app.settings.trigger_store import TriggerStore
@@ -85,4 +86,5 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     registry = ModuleRegistry(trigger_store=trigger_store)
     registry.register(SystemTestModule())
     registry.register(SystemVolumeModule())
+    registry.register(SystemAppLauncherModule())
     return registry
