@@ -29,6 +29,10 @@ VOSK_MODEL_PATH = BASE_DIR / "models" / "vosk" / "vosk-model-small-ru-0.22"
 
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8787
+AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS = 3.0
+AI_LONG_LISTENING_MAX_DURATION_SECONDS = 60.0
+AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 8.0
+AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 
 AI_WAKE_RESPONSES = [
     "Я здесь.",
@@ -453,12 +457,31 @@ def main() -> None:
 
     local_api_server = start_local_api(control, stt, registry, trigger_store)
     ai_followup_waiting = False
+    ai_long_listening_requested = False
+    ai_long_listening_initial_timeout_seconds = AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS
+    ai_long_listening_source = "wake"
+
+    def request_ai_long_listening(source: str, initial_timeout_seconds: float) -> None:
+        nonlocal ai_long_listening_requested
+        nonlocal ai_long_listening_initial_timeout_seconds
+        nonlocal ai_long_listening_source
+
+        ai_long_listening_requested = True
+        ai_long_listening_initial_timeout_seconds = initial_timeout_seconds
+        ai_long_listening_source = source
 
     def after_tts_finished() -> None:
         add_log("TTS закончил говорить")
         emit_event("tts.finished")
         state.ignore_stt_for(0.8)
         stt.clear_queue()
+
+    def after_wake_ai_tts_finished() -> None:
+        add_log("TTS закончил говорить")
+        emit_event("tts.finished")
+        state.ignore_stt_for(0.3)
+        stt.clear_queue()
+        request_ai_long_listening("wake", AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS)
 
     def after_ai_tts_finished() -> None:
         nonlocal ai_followup_waiting
@@ -473,9 +496,23 @@ def main() -> None:
             return
 
         ai_followup_waiting = True
-        stt.start_ai_followup(timeout_seconds=5.0)
-        add_log("AI follow-up режим включен", meta={"timeout_seconds": 5})
-        emit_event("ai.followup.started", payload={"timeout_seconds": 5})
+        request_ai_long_listening("followup", AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS)
+        add_log(
+            "AI follow-up режим включен",
+            meta={
+                "initial_timeout_seconds": AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS,
+                "silence_timeout_seconds": AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS,
+                "max_duration_seconds": AI_LONG_LISTENING_MAX_DURATION_SECONDS,
+            },
+        )
+        emit_event(
+            "ai.followup.started",
+            payload={
+                "initial_timeout_seconds": AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS,
+                "silence_timeout_seconds": AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS,
+                "max_duration_seconds": AI_LONG_LISTENING_MAX_DURATION_SECONDS,
+            },
+        )
 
     def start_stop_listener() -> None:
         add_log("Слушатель стоп-слова запущен")
@@ -484,6 +521,13 @@ def main() -> None:
             target=lambda: tts.stop() if stt.listen_for_stop() else None,
             daemon=True,
         ).start()
+
+    def wait_for_tts_to_finish() -> None:
+        while state.is_speaking.is_set() and not state.shutdown.is_set():
+            if not control.is_listening():
+                break
+
+            time.sleep(0.05)
 
     add_log("Загрузка Vosk...")
     stt.load()
@@ -518,7 +562,72 @@ def main() -> None:
                 add_log("Ожидание голосового ввода", meta={"mode": control.status()["mode"]})
                 last_wait_log = now
 
-            text = stt.listen_once()
+            current_mode = None
+
+            if ai_long_listening_requested:
+                ai_long_listening_requested = False
+                add_log(
+                    "AI слушает до паузы",
+                    meta={
+                        "source": ai_long_listening_source,
+                        "initial_timeout_seconds": ai_long_listening_initial_timeout_seconds,
+                        "silence_timeout_seconds": AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS,
+                        "max_duration_seconds": AI_LONG_LISTENING_MAX_DURATION_SECONDS,
+                    },
+                )
+                emit_event(
+                    "ai.long_listening.started",
+                    payload={
+                        "source": ai_long_listening_source,
+                        "initial_timeout_seconds": ai_long_listening_initial_timeout_seconds,
+                        "silence_timeout_seconds": AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS,
+                        "max_duration_seconds": AI_LONG_LISTENING_MAX_DURATION_SECONDS,
+                    },
+                )
+                text = stt.listen_ai_until_silence(
+                    initial_speech_timeout_seconds=ai_long_listening_initial_timeout_seconds,
+                    silence_timeout_seconds=AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS,
+                    max_duration_seconds=AI_LONG_LISTENING_MAX_DURATION_SECONDS,
+                )
+
+                if stt.last_ai_listening_started_speech:
+                    add_log("AI речь началась")
+
+                if text == "__ai_timeout__" or not text:
+                    ai_followup_waiting = False
+                    add_log("AI команда не поступила", level="warn")
+                    emit_event("ai.timeout", level="warn")
+
+                    if ai_long_listening_source == "followup":
+                        emit_event("ai.followup.timeout", level="warn")
+
+                    continue
+
+                if stt.last_ai_listening_end_reason == "max_duration":
+                    add_log(
+                        "AI речь завершена по лимиту",
+                        level="warn",
+                        meta={"text": text},
+                    )
+                else:
+                    add_log("AI речь завершена по паузе", meta={"text": text})
+
+                emit_event(
+                    "ai.long_listening.finished",
+                    payload={
+                        "source": ai_long_listening_source,
+                        "reason": stt.last_ai_listening_end_reason,
+                        "text": text,
+                    },
+                )
+                current_mode = "ai"
+
+                if ai_followup_waiting:
+                    ai_followup_waiting = False
+                    add_log("AI follow-up фраза распознана", meta={"text": text})
+                    emit_event("ai.followup.captured", payload={"text": text})
+            else:
+                text = stt.listen_once()
 
             if not control.is_listening():
                 stt.clear_queue()
@@ -527,9 +636,7 @@ def main() -> None:
             if not text:
                 continue
 
-            current_mode = None
-
-            if text.startswith("__command__:"):
+            if current_mode is None and text.startswith("__command__:"):
                 current_mode = "command"
                 text = text.replace("__command__:", "", 1)
                 emit_event("wake_word.detected", payload={"mode": "command", "word": "змея"})
@@ -566,7 +673,8 @@ def main() -> None:
 
                 add_log("TTS начал говорить", meta={"source": "wake_ai"})
                 emit_event("tts.started", payload={"source": "wake_ai"})
-                tts.speak(random.choice(AI_WAKE_RESPONSES), on_finish=after_tts_finished)
+                tts.speak(random.choice(AI_WAKE_RESPONSES), on_finish=after_wake_ai_tts_finished)
+                wait_for_tts_to_finish()
                 continue
 
             elif text == "__command_timeout__":
@@ -662,6 +770,7 @@ def main() -> None:
                     emit_event("tts.started", payload={"source": "ai_answer"})
                     tts.speak(answer, on_finish=after_ai_tts_finished)
                     start_stop_listener()
+                    wait_for_tts_to_finish()
 
                 except Exception as e:
                     print(f"❌ Ошибка нейро-модуля: {e}")

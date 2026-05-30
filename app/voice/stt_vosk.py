@@ -42,6 +42,8 @@ class VoskSTT:
         self.pending_wake_mode: str | None = None
         self.pending_wake_timeout_seconds = 5.0
         self.pending_wake_timeout_marker = "__command_timeout__"
+        self.last_ai_listening_end_reason = ""
+        self.last_ai_listening_started_speech = False
 
     def load(self) -> None:
         if not self.model_path.exists():
@@ -85,6 +87,79 @@ class VoskSTT:
         self.pending_wake_timeout_marker = "__ai_followup_timeout__"
         self.state.wake_word_active.set()
         self.clear_queue()
+
+    def listen_ai_until_silence(
+        self,
+        initial_speech_timeout_seconds: float = 8.0,
+        silence_timeout_seconds: float = 3.0,
+        max_duration_seconds: float = 60.0,
+    ) -> str | None:
+        if self.model is None:
+            raise RuntimeError("VoskSTT.load() must be called first")
+
+        self.last_ai_listening_end_reason = ""
+        self.last_ai_listening_started_speech = False
+        self.pending_wake_mode = None
+        self.pending_wake_timeout_marker = "__command_timeout__"
+        self.state.wake_word_active.clear()
+        self.clear_queue()
+
+        recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
+        started_at = time.time()
+        last_speech_at: float | None = None
+        final_chunks: list[str] = []
+
+        while not self.state.shutdown.is_set():
+            now = time.time()
+
+            if self.paused:
+                self.clear_queue()
+                self.last_ai_listening_end_reason = "paused"
+                return None
+
+            if now - started_at >= max_duration_seconds:
+                self.last_ai_listening_end_reason = "max_duration"
+                return self._finish_ai_listening(recognizer, final_chunks)
+
+            if last_speech_at is None:
+                if now - started_at >= initial_speech_timeout_seconds:
+                    self.last_ai_listening_end_reason = "initial_timeout"
+                    self.clear_queue()
+                    return "__ai_timeout__"
+            elif now - last_speech_at >= silence_timeout_seconds:
+                self.last_ai_listening_end_reason = "silence"
+                return self._finish_ai_listening(recognizer, final_chunks)
+
+            if self.state.ignore_regular_stt.is_set() or self.state.should_ignore_stt_now():
+                self.clear_queue()
+                time.sleep(0.05)
+                continue
+
+            try:
+                audio = self.audio_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if recognizer.AcceptWaveform(audio):
+                text = self._extract_text(recognizer.Result(), key="text")
+
+                if not text:
+                    continue
+
+                final_chunks.append(text)
+                last_speech_at = time.time()
+                self.last_ai_listening_started_speech = True
+                print(f"рџ§ѕ Vosk AI final: {text}")
+                continue
+
+            partial = self._extract_text(recognizer.PartialResult(), key="partial")
+
+            if partial:
+                last_speech_at = time.time()
+                self.last_ai_listening_started_speech = True
+
+        self.last_ai_listening_end_reason = "shutdown"
+        return self._finish_ai_listening(recognizer, final_chunks)
 
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         if self.paused or self.state.shutdown.is_set():
@@ -275,6 +350,20 @@ class VoskSTT:
                 self.audio_queue.get_nowait()
             except queue.Empty:
                 break
+
+    def _finish_ai_listening(
+        self,
+        recognizer: vosk.KaldiRecognizer,
+        final_chunks: list[str],
+    ) -> str | None:
+        final_text = self._extract_text(recognizer.FinalResult(), key="text")
+
+        if final_text:
+            final_chunks.append(final_text)
+
+        text = normalize_text(" ".join(final_chunks))
+        self.clear_queue()
+        return text or None
 
     def _extract_text(self, raw_json: str, key: str) -> str:
         try:
