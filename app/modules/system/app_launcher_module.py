@@ -10,7 +10,6 @@ from app.modules.base import AssistantModule, ModuleResponse
 
 
 VOLUME_WORDS = ["громкость", "громче", "тише", "звук"]
-NON_APP_SHORT_COMMAND_WORDS = ["выход", "тест", "говори"]
 ORDINAL_LABELS = ["первый", "второй", "третий"]
 SPOKEN_NAME_FALLBACKS = [
     ("PUBG", "Пабг Батлграундс"),
@@ -114,18 +113,10 @@ class SystemAppLauncherModule(AssistantModule):
             return False
 
         if self._has_active_pending_selection():
-            return self._extract_selection_index(normalized_text) is not None or any(
-                self._contains_trigger(normalized_text, trigger)
-                for trigger in self.get_action_triggers("app.launch")
-            )
+            if self._extract_selection_index(normalized_text) is not None:
+                return True
 
-        if any(
-            self._contains_trigger(normalized_text, trigger)
-            for trigger in self.get_action_triggers("app.launch")
-        ):
-            return True
-
-        return self._is_short_app_query(normalized_text)
+        return self._contains_launch_trigger(normalized_text)
 
     def handle(self, text: str) -> ModuleResponse:
         if self._has_active_pending_selection():
@@ -266,27 +257,17 @@ class SystemAppLauncherModule(AssistantModule):
         query = normalize_text(text)
         query = re.sub(r"^(змея|змей|змею)\s+", "", query)
 
-        triggers = sorted(
-            self.get_action_triggers("app.launch"),
-            key=lambda trigger: len(normalize_text(trigger)),
-            reverse=True,
+        trigger = self._find_launch_trigger(query)
+
+        if trigger is None:
+            return ""
+
+        query = re.sub(
+            rf"\b{re.escape(trigger)}\b",
+            " ",
+            query,
+            count=1,
         )
-
-        for trigger in triggers:
-            normalized_trigger = normalize_text(trigger)
-
-            if not normalized_trigger:
-                continue
-
-            query, replacements = re.subn(
-                rf"\b{re.escape(normalized_trigger)}\b",
-                " ",
-                query,
-                count=1,
-            )
-
-            if replacements:
-                break
 
         for stop_word in QUERY_STOP_WORDS:
             query = re.sub(rf"\b{re.escape(stop_word)}\b", " ", query)
@@ -369,20 +350,7 @@ class SystemAppLauncherModule(AssistantModule):
 
     def _is_launch_command(self, text: str) -> bool:
         normalized_text = normalize_text(text)
-        return any(
-            self._contains_trigger(normalized_text, trigger)
-            for trigger in self.get_action_triggers("app.launch")
-        )
-
-    def _is_short_app_query(self, text: str) -> bool:
-        if not text:
-            return False
-
-        if any(word in text for word in NON_APP_SHORT_COMMAND_WORDS):
-            return False
-
-        words = text.split()
-        return 1 <= len(words) <= 6
+        return self._contains_launch_trigger(normalized_text)
 
     def _selection_hint(self, count: int) -> str:
         labels = ORDINAL_LABELS[:count]
@@ -407,3 +375,26 @@ class SystemAppLauncherModule(AssistantModule):
             return False
 
         return re.search(rf"\b{re.escape(normalized_trigger)}\b", text) is not None
+
+    def _contains_launch_trigger(self, text: str) -> bool:
+        return self._find_launch_trigger(text) is not None
+
+    def _find_launch_trigger(self, text: str) -> str | None:
+        normalized_text = normalize_text(text)
+        triggers = sorted(
+            (
+                normalize_text(trigger)
+                for trigger in self.get_action_triggers("app.launch")
+            ),
+            key=len,
+            reverse=True,
+        )
+
+        for trigger in triggers:
+            if not trigger:
+                continue
+
+            if re.search(rf"\b{re.escape(trigger)}\b", normalized_text):
+                return trigger
+
+        return None
