@@ -346,7 +346,7 @@ class SystemAppLauncherModule(AssistantModule):
         speech_name = self._target_speech_name(target, fallback_spoken_name)
 
         if target.type == "steam":
-            return f"Открываю {speech_name} через Steam."
+            return f"Открываю {speech_name} через Стим."
 
         if target.source == "wargaming_shortcut":
             return f"Открываю {speech_name} через игровой центр."
@@ -362,10 +362,9 @@ class SystemAppLauncherModule(AssistantModule):
 
         if self.resolver.launcher.last_launch_was_elevated:
             return (
-                f"Для запуска {speech_name} нужны права администратора. "
-                "Я открыла запрос Windows, подтверди его."
+                f"Открываю {speech_name} с повышенными правами. "
+                
             )
-
         return self._format_open_response(target, fallback_spoken_name)
 
     def _is_launch_command(self, text: str) -> bool:

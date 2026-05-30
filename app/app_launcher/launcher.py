@@ -10,12 +10,16 @@ from app.app_launcher.debug import app_debug_step
 from app.app_launcher.models import AppTarget
 
 
-def is_access_denied_error(error: Exception) -> bool:
+def is_elevation_required_error(error: Exception) -> bool:
     text = str(error).lower()
     return (
         "access is denied" in text
         or "winerror 5" in text
+        or "winerror 740" in text
         or "permission denied" in text
+        or "requires elevation" in text
+        or "the requested operation requires elevation" in text
+        or "запрошенная операция требует повышения" in text
         or "отказано в доступе" in text
     )
 
@@ -90,7 +94,7 @@ class AppLauncher:
         try:
             os.startfile(str(shortcut_path))
         except Exception as error:
-            if not is_access_denied_error(error):
+            if not is_elevation_required_error(error):
                 raise
 
             self._try_runas(target, str(shortcut_path))
@@ -109,7 +113,7 @@ class AppLauncher:
         try:
             subprocess.Popen([target.path], shell=False)
         except Exception as error:
-            if not is_access_denied_error(error):
+            if not is_elevation_required_error(error):
                 raise
 
             self._try_runas(target, target.path)
@@ -129,7 +133,7 @@ class AppLauncher:
         try:
             subprocess.Popen([str(exe_path)], cwd=str(parent_dir), shell=False)
         except Exception as error:
-            if not is_access_denied_error(error):
+            if not is_elevation_required_error(error):
                 raise
 
             self._try_runas(target, str(exe_path), cwd=str(parent_dir))
@@ -142,7 +146,7 @@ class AppLauncher:
         cwd: str | None = None,
     ) -> None:
         app_debug_step(
-            "launch access denied, trying runas",
+            "launch elevation required, trying runas",
             {
                 "target": target.name,
                 "type": target.type,
