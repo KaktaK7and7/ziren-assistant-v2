@@ -1,6 +1,7 @@
 import difflib
 import re
 
+from app.app_launcher.debug import app_debug_step
 from app.app_launcher.models import AppTarget, LaunchResolution
 
 try:
@@ -39,6 +40,9 @@ DANGEROUS_EXE_MARKERS = [
     "удалить",
     "деинсталлировать",
     "деинсталлятор",
+    "удалить",
+    "деинсталлировать",
+    "деинсталлятор",
 ]
 
 
@@ -67,9 +71,9 @@ class AppMatcher:
 
             if normalized_query == normalized_name:
                 best_score = max(best_score, 1.0)
-            elif normalized_query in normalized_name:
+            elif len(normalized_query) >= 3 and normalized_query in normalized_name:
                 best_score = max(best_score, 0.92)
-            elif normalized_name in normalized_query:
+            elif len(normalized_name) >= 3 and normalized_name in normalized_query:
                 best_score = max(best_score, 0.84)
             else:
                 best_score = max(
@@ -112,7 +116,7 @@ class AppMatcher:
             return LaunchResolution(
                 status="ambiguous",
                 query=query,
-                candidates=self._unique_candidates([target for _, _, target in scored[:5]]),
+                candidates=self._unique_candidates([target for _, _, target in scored[:15]]),
                 message="Найдено несколько похожих приложений.",
             )
 
@@ -121,6 +125,66 @@ class AppMatcher:
             query=query,
             message=f"Не нашла приложение {query}.",
         )
+
+    def rank_candidates_for_ai(
+        self,
+        query: str,
+        targets: list[AppTarget],
+        limit: int = 40,
+    ) -> list[AppTarget]:
+        scored: list[tuple[float, int, int, AppTarget]] = []
+        priority_pool: list[AppTarget] = []
+
+        for order, target in enumerate(targets):
+            if self._is_unsafe_ai_candidate(target):
+                continue
+
+            score = self.score(query, target)
+            priority = self._sort_priority(target)
+
+            if score > 0.0:
+                scored.append((score, priority, order, target))
+
+            if target.type in {"steam", "shortcut", "system"}:
+                priority_pool.append(target)
+
+        scored.sort(key=lambda item: (-item[0], item[1], item[2], item[3].name.lower()))
+        top_local_matches = [target for _, _, _, target in scored[:20]]
+        top_priority_targets = priority_pool[:40]
+
+        result = self._unique_candidates(
+            top_local_matches + top_priority_targets
+        )[:limit]
+
+        app_debug_step(
+            "matcher ai candidates ranked",
+            {
+                "query": query,
+                "count": len(result),
+                "top": [
+                    {
+                        "name": target.name,
+                        "type": target.type,
+                        "source": target.source,
+                    }
+                    for target in result[:20]
+                ],
+            },
+        )
+
+        return result
+
+    def _is_unsafe_ai_candidate(self, target: AppTarget) -> bool:
+        if target.type == "steam" or target.type == "system":
+            return False
+
+        if target.type == "shortcut":
+            return is_dangerous_exe_name(target.path or target.name)
+
+        if target.type == "exe":
+            return is_dangerous_exe_name(target.path or target.name)
+
+        return False
 
     def _similarity(self, left: str, right: str) -> float:
         if not left or not right:
@@ -154,6 +218,17 @@ class AppMatcher:
             return 3
         return 4
 
+    def _ai_fallback_score(self, target: AppTarget) -> float:
+        if target.type == "steam":
+            return 0.24 + target.confidence_bonus
+        if target.type == "shortcut" and target.source == "wargaming_shortcut":
+            return 0.22 + target.confidence_bonus
+        if target.type == "shortcut":
+            return 0.18 + target.confidence_bonus
+        if target.type == "system":
+            return 0.12 + target.confidence_bonus
+        return 0.0
+
     def _second_distinct_score(
         self,
         best_target: AppTarget,
@@ -169,15 +244,17 @@ class AppMatcher:
 
     def _unique_candidates(self, candidates: list[AppTarget]) -> list[AppTarget]:
         unique: list[AppTarget] = []
-        seen: set[str] = set()
+        seen_ids: set[str] = set()
+        seen_names: set[str] = set()
 
         for candidate in candidates:
-            key = normalize_text(candidate.name)
+            normalized_name = normalize_text(candidate.name)
 
-            if key in seen:
+            if candidate.target_id in seen_ids or normalized_name in seen_names:
                 continue
 
             unique.append(candidate)
-            seen.add(key)
+            seen_ids.add(candidate.target_id)
+            seen_names.add(normalized_name)
 
         return unique

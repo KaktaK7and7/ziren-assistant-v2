@@ -5,7 +5,10 @@ import time
 from getpass import getpass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
+from app.app_launcher.cache import AppLauncherCache
+from app.app_launcher.models import AppTarget
 from app.api.auth_client import AuthClient
 from app.api.neuro_client import NeuroClient
 from app.events.event_bus import emit_event, get_events
@@ -85,6 +88,8 @@ def start_local_api(
     registry: ModuleRegistry,
     trigger_store: TriggerStore,
 ) -> ThreadingHTTPServer:
+    app_launcher_cache = AppLauncherCache()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:
             return
@@ -95,7 +100,7 @@ def start_local_api(
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -158,6 +163,10 @@ def start_local_api(
 
             if self.path == "/features/triggers/defaults":
                 self.send_json({"features": registry.get_feature_trigger_defaults()})
+                return
+
+            if self.path == "/app-launcher/apps":
+                self.send_json({"apps": app_launcher_cache.list_apps()})
                 return
 
             self.send_json({"error": "not found"}, status=404)
@@ -226,6 +235,79 @@ def start_local_api(
                 self.send_json({"ok": True, "feature": feature})
                 return
 
+            if self.path == "/app-launcher/apps":
+                data = self.read_json_body()
+
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                try:
+                    original_target_id = str(data.get("target_id", "")).strip()
+                    target = AppTarget(
+                        target_id="",
+                        name=str(data.get("name", "")).strip(),
+                        type=str(data.get("type", "")).strip(),
+                        path=data.get("path"),
+                        appid=data.get("appid"),
+                        spoken_name=data.get("spoken_name"),
+                        source=str(data.get("source", "")),
+                    )
+
+                    if not target.type:
+                        self.send_bad_request("type is required")
+                        return
+
+                    aliases = data.get("aliases", [])
+
+                    if not isinstance(aliases, list) or not all(
+                        isinstance(alias, str) for alias in aliases
+                    ):
+                        self.send_bad_request("aliases must be a list of strings")
+                        return
+
+                    app_launcher_cache.upsert_target_with_aliases(
+                        target,
+                        aliases,
+                        original_target_id=original_target_id,
+                    )
+                    self.send_json({"ok": True, "apps": app_launcher_cache.list_apps()})
+                except Exception as error:
+                    self.send_bad_request(str(error))
+
+                return
+
+            if self.path == "/app-launcher/apps/cleanup":
+                try:
+                    app_launcher_cache.cleanup_duplicates()
+                    self.send_json({"ok": True, "apps": app_launcher_cache.list_apps()})
+                except Exception as error:
+                    self.send_bad_request(str(error))
+
+                return
+
+            if self.path == "/app-launcher/aliases":
+                data = self.read_json_body()
+
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                alias = data.get("alias")
+                target_id = data.get("target_id")
+
+                if not isinstance(alias, str) or not isinstance(target_id, str):
+                    self.send_bad_request("alias and target_id are required")
+                    return
+
+                try:
+                    app_launcher_cache.add_alias(alias, target_id)
+                    self.send_json({"ok": True, "apps": app_launcher_cache.list_apps()})
+                except Exception as error:
+                    self.send_bad_request(str(error))
+
+                return
+
             if self.path == "/listening/toggle":
                 status = control.toggle_listening()
 
@@ -259,6 +341,37 @@ def start_local_api(
                 add_log("Прослушка выключена", meta={"source": "gui"})
                 emit_event("listening.disabled", payload={"source": "gui"})
                 self.send_json(status)
+                return
+
+            self.send_json({"error": "not found"}, status=404)
+
+        def do_DELETE(self) -> None:
+            if self.path.startswith("/app-launcher/apps/"):
+                target_id = unquote(self.path.removeprefix("/app-launcher/apps/"))
+
+                if not target_id:
+                    self.send_bad_request("target_id is required")
+                    return
+
+                app_launcher_cache.delete_target(target_id)
+                self.send_json({"ok": True, "apps": app_launcher_cache.list_apps()})
+                return
+
+            if self.path == "/app-launcher/aliases":
+                data = self.read_json_body()
+
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                alias = data.get("alias")
+
+                if not isinstance(alias, str) or not alias.strip():
+                    self.send_bad_request("alias is required")
+                    return
+
+                app_launcher_cache.delete_alias(alias)
+                self.send_json({"ok": True, "apps": app_launcher_cache.list_apps()})
                 return
 
             self.send_json({"error": "not found"}, status=404)

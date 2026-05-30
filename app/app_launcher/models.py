@@ -12,6 +12,7 @@ class AppTarget:
     aliases: list[str] = field(default_factory=list)
     source: str = ""
     confidence_bonus: float = 0.0
+    spoken_name: str | None = None
 
 
 @dataclass
@@ -21,3 +22,4 @@ class LaunchResolution:
     target: AppTarget | None = None
     candidates: list[AppTarget] = field(default_factory=list)
     message: str = ""
+    spoken_name: str | None = None

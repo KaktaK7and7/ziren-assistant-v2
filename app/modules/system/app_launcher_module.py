@@ -1,6 +1,7 @@
 import re
 import time
 
+from app.app_launcher.debug import app_debug_step
 from app.app_launcher.matcher import normalize_text
 from app.app_launcher.models import AppTarget
 from app.app_launcher.resolver import AppResolver
@@ -9,6 +10,17 @@ from app.modules.base import AssistantModule, ModuleResponse
 
 
 VOLUME_WORDS = ["громкость", "громче", "тише", "звук"]
+NON_APP_SHORT_COMMAND_WORDS = ["выход", "тест", "говори"]
+ORDINAL_LABELS = ["первый", "второй", "третий"]
+SPOKEN_NAME_FALLBACKS = [
+    ("PUBG", "Пабг Батлграундс"),
+    ("Dead Cells", "Дед Селс"),
+    ("Euro Truck Simulator", "Евро Трак Симулятор"),
+    ("Counter-Strike", "Ка Эс"),
+    ("Need for Speed", "Нид фор Спид"),
+    ("Wallpaper Engine", "Волпейпер Энжин"),
+    ("Rust", "Раст"),
+]
 QUERY_STOP_WORDS = [
     "приложение",
     "приложуху",
@@ -17,7 +29,7 @@ QUERY_STOP_WORDS = [
     "игру",
     "игра",
 ]
-SELECTION_TTL_SECONDS = 30.0
+PENDING_SELECTION_TTL_SECONDS = 30.0
 SELECTION_ALIASES = {
     0: [
         "1",
@@ -47,13 +59,17 @@ SELECTION_ALIASES = {
         "вариант три",
         "номер три",
         "открой третий",
+        "запусти третий",
     ],
     3: [
         "4",
         "четыре",
         "четвертый",
+        "четвёртый",
         "четвертую",
+        "четвёртую",
         "вариант четыре",
+        "номер четыре",
     ],
     4: [
         "5",
@@ -61,6 +77,7 @@ SELECTION_ALIASES = {
         "пятый",
         "пятую",
         "вариант пять",
+        "номер пять",
     ],
 }
 
@@ -102,44 +119,90 @@ class SystemAppLauncherModule(AssistantModule):
                 for trigger in self.get_action_triggers("app.launch")
             )
 
-        return any(
+        if any(
             self._contains_trigger(normalized_text, trigger)
             for trigger in self.get_action_triggers("app.launch")
-        )
+        ):
+            return True
+
+        return self._is_short_app_query(normalized_text)
 
     def handle(self, text: str) -> ModuleResponse:
         if self._has_active_pending_selection():
-            selection_index = self._extract_selection_index(text)
+            app_debug_step(
+                "pending selection received",
+                {
+                    "text": text,
+                    "pending_query": self.pending_query,
+                    "candidates": [
+                        candidate.name for candidate in self.pending_candidates
+                    ],
+                },
+            )
+            pending_response = self._handle_pending_selection(text)
 
-            if selection_index is not None:
-                return self._handle_pending_selection(selection_index)
+            if pending_response is not None:
+                return pending_response
 
             if self._is_launch_command(text):
                 self._clear_pending_selection()
 
         query = self._extract_query(text)
+        app_debug_step(
+            "command received",
+            {
+                "raw_text": text,
+                "query": query,
+            },
+        )
 
         if not query:
+            app_debug_step("empty query")
             return ModuleResponse(text="Что открыть?")
 
         resolution = self.resolver.launch_query(query)
 
         if resolution.status == "found" and resolution.target is not None:
-            return ModuleResponse(text=self._format_open_response(resolution.target))
+            return ModuleResponse(
+                text=self._format_launch_response(
+                    resolution.target,
+                    resolution.spoken_name,
+                )
+            )
 
         if resolution.status == "ambiguous":
-            self.pending_candidates = resolution.candidates[:5]
+            readable_candidates = [
+                candidate
+                for candidate in resolution.candidates[:3]
+                if self._target_speech_name(candidate)
+            ]
+
+            if not readable_candidates:
+                return ModuleResponse(
+                    text="Не смогла уверенно выбрать приложение. Попробуй назвать его точнее."
+                )
+
+            self.pending_candidates = readable_candidates
             self.pending_query = query
             self.pending_created_at = time.time()
+            app_debug_step(
+                "pending selection created",
+                {
+                    "query": query,
+                    "candidates": [
+                        candidate.name for candidate in self.pending_candidates
+                    ],
+                },
+            )
 
             variants = ", ".join(
-                f"{index}. {candidate.name}"
-                for index, candidate in enumerate(self.pending_candidates, start=1)
+                f"{ORDINAL_LABELS[index]} — {self._target_speech_name(candidate)}"
+                for index, candidate in enumerate(self.pending_candidates)
             )
             return ModuleResponse(
                 text=(
-                    f"Я нашла несколько вариантов: {variants}. "
-                    "Скажи: первый, второй или уточни название."
+                    f"Я не уверена. Похоже на: {variants}. "
+                    f"Скажи {self._selection_hint(len(self.pending_candidates))}."
                 )
             )
 
@@ -148,14 +211,22 @@ class SystemAppLauncherModule(AssistantModule):
                 text=f"Не смогла открыть {query}: {resolution.message}"
             )
 
+        self._emit_not_found(query)
+
         return ModuleResponse(
-            text=(
-                f"Не нашла приложение {query}. Позже я смогу открыть окно добавления "
-                "приложения, чтобы ты указал файл запуска один раз."
-            )
+            text=resolution.message
+            or "Не смогла уверенно понять, какое приложение открыть. Попробуй назвать его точнее."
         )
 
-    def _handle_pending_selection(self, selection_index: int) -> ModuleResponse:
+    def _handle_pending_selection(self, text: str) -> ModuleResponse | None:
+        selection_index = self._extract_selection_index(text)
+
+        if selection_index is None:
+            return None
+
+        return self._launch_selected_target(selection_index)
+
+    def _launch_selected_target(self, selection_index: int) -> ModuleResponse:
         if selection_index >= len(self.pending_candidates):
             return ModuleResponse(
                 text=(
@@ -166,6 +237,14 @@ class SystemAppLauncherModule(AssistantModule):
 
         target = self.pending_candidates[selection_index]
         pending_query = self.pending_query
+        app_debug_step(
+            "pending selection selected",
+            {
+                "index": selection_index + 1,
+                "target": target.name,
+                "target_id": target.target_id,
+            },
+        )
 
         try:
             self.resolver.launcher.launch(target)
@@ -176,11 +255,11 @@ class SystemAppLauncherModule(AssistantModule):
 
             self._clear_pending_selection()
             return ModuleResponse(
-                text=f"{self._format_open_response(target)} Запомнила этот выбор."
+                text=f"{self._format_launch_response(target)} Запомнила этот выбор."
             )
         except Exception as error:
             return ModuleResponse(
-                text=f"Не смогла открыть {target.name}: {error}"
+                text=f"Не смогла открыть {self._target_speech_name(target)}: {error}"
             )
 
     def _extract_query(self, text: str) -> str:
@@ -231,7 +310,7 @@ class SystemAppLauncherModule(AssistantModule):
         if not self.pending_candidates:
             return False
 
-        if time.time() - self.pending_created_at > SELECTION_TTL_SECONDS:
+        if time.time() - self.pending_created_at > PENDING_SELECTION_TTL_SECONDS:
             self._clear_pending_selection()
             return False
 
@@ -242,14 +321,52 @@ class SystemAppLauncherModule(AssistantModule):
         self.pending_query = ""
         self.pending_created_at = 0.0
 
-    def _format_open_response(self, target: AppTarget) -> str:
+    def _target_speech_name(
+        self,
+        target: AppTarget,
+        fallback_spoken_name: str | None = None,
+    ) -> str:
+        if fallback_spoken_name:
+            return fallback_spoken_name
+
+        if target.spoken_name:
+            return target.spoken_name
+
+        for marker, spoken_name in SPOKEN_NAME_FALLBACKS:
+            if marker.lower() in target.name.lower():
+                return spoken_name
+
+        return target.name.strip()
+
+    def _format_open_response(
+        self,
+        target: AppTarget,
+        fallback_spoken_name: str | None = None,
+    ) -> str:
+        speech_name = self._target_speech_name(target, fallback_spoken_name)
+
         if target.type == "steam":
-            return f"Открываю {target.name} через Steam."
+            return f"Открываю {speech_name} через Steam."
 
         if target.source == "wargaming_shortcut":
-            return f"Открываю {target.name} через игровой центр."
+            return f"Открываю {speech_name} через игровой центр."
 
-        return f"Открываю {target.name}."
+        return f"Открываю {speech_name}."
+
+    def _format_launch_response(
+        self,
+        target: AppTarget,
+        fallback_spoken_name: str | None = None,
+    ) -> str:
+        speech_name = self._target_speech_name(target, fallback_spoken_name)
+
+        if self.resolver.launcher.last_launch_was_elevated:
+            return (
+                f"Для запуска {speech_name} нужны права администратора. "
+                "Я открыла запрос Windows, подтверди его."
+            )
+
+        return self._format_open_response(target, fallback_spoken_name)
 
     def _is_launch_command(self, text: str) -> bool:
         normalized_text = normalize_text(text)
@@ -257,6 +374,32 @@ class SystemAppLauncherModule(AssistantModule):
             self._contains_trigger(normalized_text, trigger)
             for trigger in self.get_action_triggers("app.launch")
         )
+
+    def _is_short_app_query(self, text: str) -> bool:
+        if not text:
+            return False
+
+        if any(word in text for word in NON_APP_SHORT_COMMAND_WORDS):
+            return False
+
+        words = text.split()
+        return 1 <= len(words) <= 6
+
+    def _selection_hint(self, count: int) -> str:
+        labels = ORDINAL_LABELS[:count]
+
+        if len(labels) == 1:
+            return labels[0]
+
+        return " или ".join([", ".join(labels[:-1]), labels[-1]]).strip(" ,")
+
+    def _emit_not_found(self, query: str) -> None:
+        try:
+            from app.events.event_bus import emit_event
+
+            emit_event("app.launcher.not_found", payload={"query": query}, level="warn")
+        except Exception:
+            pass
 
     def _contains_trigger(self, text: str, trigger: str) -> bool:
         normalized_trigger = normalize_text(trigger)
