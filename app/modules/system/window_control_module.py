@@ -29,6 +29,9 @@ class SystemWindowControlModule(AssistantModule):
                 "закрой приложение",
                 "выключи приложение",
                 "закрой окно",
+                "закрой игру",
+                "выруби",
+                "выруби приложение",
             ],
         },
         "window.minimize": {
@@ -122,6 +125,12 @@ class SystemWindowControlModule(AssistantModule):
         if result.status == "not_found":
             add_log("WindowControl окно не найдено", meta={"query": query}, level="warn")
             return ModuleResponse(text=f"Не нашла открытое окно {query}.")
+
+        if "Нельзя закрыть системный процесс" in result.message:
+            return ModuleResponse(text="Нельзя закрыть системный процесс.")
+
+        if "Нет прав для закрытия процесса" in result.message:
+            return ModuleResponse(text="Не хватает прав для закрытия процесса.")
 
         return ModuleResponse(text=f"Не смогла выполнить действие: {result.message}")
 

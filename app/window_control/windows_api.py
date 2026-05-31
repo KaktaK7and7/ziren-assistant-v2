@@ -20,6 +20,24 @@ EXCLUDED_TITLES = {
     "default ime",
 }
 
+PROCESS_CLOSE_DENYLIST = {
+    "explorer.exe",
+    "system",
+    "system idle process",
+    "wininit.exe",
+    "winlogon.exe",
+    "csrss.exe",
+    "smss.exe",
+    "services.exe",
+    "lsass.exe",
+    "dwm.exe",
+    "taskhostw.exe",
+    "sihost.exe",
+    "searchhost.exe",
+    "startmenuexperiencehost.exe",
+    "textinputhost.exe",
+}
+
 
 def _ensure_windows() -> None:
     if platform.system().lower() != "windows":
@@ -100,6 +118,30 @@ def focus_window(hwnd: int) -> None:
 def close_window(hwnd: int) -> None:
     _ensure_windows()
     ctypes.windll.user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+
+
+def force_close_process(process_id: int) -> None:
+    _ensure_windows()
+
+    try:
+        process = psutil.Process(process_id)
+        process_name = process.name().lower()
+
+        if process_name in PROCESS_CLOSE_DENYLIST:
+            raise RuntimeError("Нельзя закрыть системный процесс.")
+
+        process.terminate()
+
+        try:
+            process.wait(timeout=1.5)
+            return
+        except psutil.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1.5)
+    except psutil.AccessDenied as error:
+        raise RuntimeError("Нет прав для закрытия процесса.") from error
+    except psutil.NoSuchProcess:
+        return
 
 
 def show_desktop() -> None:

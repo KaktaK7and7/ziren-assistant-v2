@@ -5,8 +5,8 @@ from app.app_launcher.cache import AppLauncherCache
 from app.core.log_bus import add_log
 from app.window_control.models import WindowActionResult, WindowTarget
 from app.window_control.windows_api import (
-    close_window,
     focus_window,
+    force_close_process,
     list_windows,
     maximize_window,
     minimize_window,
@@ -101,7 +101,7 @@ class WindowResolver:
 
         try:
             if action == "close":
-                close_window(target.hwnd)
+                force_close_process(target.process_id)
             elif action == "minimize":
                 minimize_window(target.hwnd)
             elif action == "maximize":
