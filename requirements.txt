@@ -11,3 +11,4 @@ fastapi
 uvicorn
 pycaw
 comtypes
+psutil
