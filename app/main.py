@@ -2,6 +2,7 @@ import json
 import random
 import threading
 import time
+from dataclasses import asdict
 from getpass import getpass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,10 +14,14 @@ from app.api.auth_client import AuthClient
 from app.api.neuro_client import NeuroClient
 from app.events.event_bus import emit_event, get_events
 from app.features.feature_gate import FeatureGate
+from app.media_control.models import MusicPreset
+from app.media_control.resolver import MediaResolver
+from app.media_control.store import MusicPresetStore
 from app.modules.registry import ModuleRegistry, create_default_registry
 from app.router.command_router import CommandRouter
 from app.settings.trigger_store import TriggerStore
 from app.storage.local_store import save_session
+from app.voice.audio_ducking import duck_volume, restore_volume
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
 from app.voice.stt_vosk import VoskSTT
@@ -93,6 +98,8 @@ def start_local_api(
     trigger_store: TriggerStore,
 ) -> ThreadingHTTPServer:
     app_launcher_cache = AppLauncherCache()
+    music_preset_store = MusicPresetStore()
+    media_resolver = MediaResolver(music_preset_store)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:
@@ -171,6 +178,17 @@ def start_local_api(
 
             if self.path == "/app-launcher/apps":
                 self.send_json({"apps": app_launcher_cache.list_apps()})
+                return
+
+            if self.path == "/media/presets":
+                self.send_json(
+                    {
+                        "presets": [
+                            asdict(preset)
+                            for preset in music_preset_store.list_presets()
+                        ]
+                    }
+                )
                 return
 
             self.send_json({"error": "not found"}, status=404)
@@ -312,6 +330,62 @@ def start_local_api(
 
                 return
 
+            if self.path == "/media/presets":
+                data = self.read_json_body()
+
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                aliases = data.get("aliases", [])
+
+                if not isinstance(aliases, list) or not all(
+                    isinstance(alias, str) for alias in aliases
+                ):
+                    self.send_bad_request("aliases must be a list of strings")
+                    return
+
+                try:
+                    music_preset_store.save_preset(
+                        MusicPreset(
+                            preset_id=str(data.get("preset_id", "")).strip(),
+                            name=str(data.get("name", "")).strip(),
+                            url=str(data.get("url", "")).strip(),
+                            aliases=aliases,
+                            enabled=bool(data.get("enabled", True)),
+                        )
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "presets": [
+                                asdict(preset)
+                                for preset in music_preset_store.list_presets()
+                            ],
+                        }
+                    )
+                except Exception as error:
+                    self.send_bad_request(str(error))
+
+                return
+
+            if self.path == "/media/presets/test":
+                data = self.read_json_body()
+
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                url = str(data.get("url", "")).strip()
+                result = media_resolver.test_preset(url)
+
+                if result.status != "success":
+                    self.send_bad_request(result.message)
+                    return
+
+                self.send_json({"ok": True, "message": result.message})
+                return
+
             if self.path == "/listening/toggle":
                 status = control.toggle_listening()
 
@@ -359,6 +433,25 @@ def start_local_api(
 
                 app_launcher_cache.delete_target(target_id)
                 self.send_json({"ok": True, "apps": app_launcher_cache.list_apps()})
+                return
+
+            if self.path.startswith("/media/presets/"):
+                preset_id = unquote(self.path.removeprefix("/media/presets/"))
+
+                if not preset_id:
+                    self.send_bad_request("preset_id is required")
+                    return
+
+                music_preset_store.delete_preset(preset_id)
+                self.send_json(
+                    {
+                        "ok": True,
+                        "presets": [
+                            asdict(preset)
+                            for preset in music_preset_store.list_presets()
+                        ],
+                    }
+                )
                 return
 
             if self.path == "/app-launcher/aliases":
@@ -476,11 +569,16 @@ def main() -> None:
         state.ignore_stt_for(0.8)
         stt.clear_queue()
 
+    def after_wake_command_tts_finished() -> None:
+        after_tts_finished()
+        duck_volume(5)
+
     def after_wake_ai_tts_finished() -> None:
         add_log("TTS закончил говорить")
         emit_event("tts.finished")
         state.ignore_stt_for(0.3)
         stt.clear_queue()
+        duck_volume(5)
         request_ai_long_listening("wake", AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS)
 
     def after_ai_tts_finished() -> None:
@@ -552,6 +650,7 @@ def main() -> None:
     try:
         while True:
             if not control.is_listening():
+                restore_volume()
                 stt.clear_queue()
                 time.sleep(0.15)
                 continue
@@ -566,6 +665,7 @@ def main() -> None:
 
             if ai_long_listening_requested:
                 ai_long_listening_requested = False
+                duck_volume(5)
                 add_log(
                     "AI слушает до паузы",
                     meta={
@@ -595,6 +695,7 @@ def main() -> None:
 
                 if text == "__ai_timeout__" or not text:
                     ai_followup_waiting = False
+                    restore_volume()
                     add_log("AI команда не поступила", level="warn")
                     emit_event("ai.timeout", level="warn")
 
@@ -621,6 +722,7 @@ def main() -> None:
                     },
                 )
                 current_mode = "ai"
+                restore_volume()
 
                 if ai_followup_waiting:
                     ai_followup_waiting = False
@@ -630,6 +732,7 @@ def main() -> None:
                 text = stt.listen_once()
 
             if not control.is_listening():
+                restore_volume()
                 stt.clear_queue()
                 continue
 
@@ -637,11 +740,14 @@ def main() -> None:
                 continue
 
             if current_mode is None and text.startswith("__command__:"):
+                duck_volume(5)
                 current_mode = "command"
                 text = text.replace("__command__:", "", 1)
                 emit_event("wake_word.detected", payload={"mode": "command", "word": "змея"})
+                restore_volume()
 
             elif text.startswith("__ai__:"):
+                duck_volume(5)
                 current_mode = "ai"
                 text = text.replace("__ai__:", "", 1)
 
@@ -651,9 +757,11 @@ def main() -> None:
                     emit_event("ai.followup.captured", payload={"text": text})
                 else:
                     emit_event("wake_word.detected", payload={"mode": "ai", "word": "мелисса"})
+                restore_volume()
 
             elif text == "__wake_command__":
                 current_mode = "command"
+                duck_volume(5)
 
                 print("⚡ Змея услышала кодовое слово.")
                 add_log("Wake word услышан", meta={"type": "command", "word": "змея"})
@@ -661,11 +769,13 @@ def main() -> None:
 
                 add_log("TTS начал говорить", meta={"source": "wake_command"})
                 emit_event("tts.started", payload={"source": "wake_command"})
-                tts.speak("Слушаю команду.", on_finish=after_tts_finished)
+                restore_volume()
+                tts.speak("Слушаю команду.", on_finish=after_wake_command_tts_finished)
                 continue
 
             elif text == "__wake_ai__":
                 current_mode = "ai"
+                duck_volume(5)
 
                 print("🧠 Мелисса услышала кодовое слово.")
                 add_log("Wake word услышан", meta={"type": "ai", "word": "мелисса"})
@@ -673,11 +783,13 @@ def main() -> None:
 
                 add_log("TTS начал говорить", meta={"source": "wake_ai"})
                 emit_event("tts.started", payload={"source": "wake_ai"})
+                restore_volume()
                 tts.speak(random.choice(AI_WAKE_RESPONSES), on_finish=after_wake_ai_tts_finished)
                 wait_for_tts_to_finish()
                 continue
 
             elif text == "__command_timeout__":
+                restore_volume()
                 print("⌛ Команда не поступила.")
                 add_log("Команда не поступила", level="warn")
                 emit_event("command.timeout", level="warn")
@@ -685,6 +797,7 @@ def main() -> None:
 
             elif text == "__ai_followup_timeout__":
                 ai_followup_waiting = False
+                restore_volume()
                 print("⌛ AI follow-up timeout.")
                 add_log("AI follow-up timeout")
                 emit_event("ai.followup.timeout")
@@ -713,6 +826,7 @@ def main() -> None:
 
                 add_log("TTS начал говорить", meta={"source": "tts_test"})
                 emit_event("tts.started", payload={"source": "tts_test"})
+                restore_volume()
                 tts.speak(long_text, on_finish=after_tts_finished)
                 start_stop_listener()
                 continue
@@ -747,6 +861,7 @@ def main() -> None:
 
                 add_log("TTS начал говорить", meta={"source": "local_command"})
                 emit_event("tts.started", payload={"source": "local_command"})
+                restore_volume()
                 tts.speak(response_text, on_finish=after_tts_finished)
                 start_stop_listener()
                 continue
@@ -768,6 +883,7 @@ def main() -> None:
 
                     add_log("TTS начал говорить", meta={"source": "ai_answer"})
                     emit_event("tts.started", payload={"source": "ai_answer"})
+                    restore_volume()
                     tts.speak(answer, on_finish=after_ai_tts_finished)
                     start_stop_listener()
                     wait_for_tts_to_finish()
@@ -779,6 +895,7 @@ def main() -> None:
 
                     add_log("TTS начал говорить", meta={"source": "neuro_error"})
                     emit_event("tts.started", payload={"source": "neuro_error"})
+                    restore_volume()
                     tts.speak(
                         "Не смогла связаться с нейро-модулем.",
                         on_finish=after_tts_finished,
@@ -795,6 +912,7 @@ def main() -> None:
         emit_event("assistant.stopping")
 
         control.stop()
+        restore_volume()
         local_api_server.shutdown()
         state.shutdown.set()
         tts.stop()

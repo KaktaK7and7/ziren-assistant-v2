@@ -1,5 +1,6 @@
 from app.modules.base import AssistantModule
 from app.modules.system.app_launcher_module import SystemAppLauncherModule
+from app.modules.system.media_control_module import SystemMediaControlModule
 from app.modules.system.test_module import SystemTestModule
 from app.modules.system.volume_module import SystemVolumeModule
 from app.modules.system.window_control_module import SystemWindowControlModule
@@ -87,6 +88,7 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     registry = ModuleRegistry(trigger_store=trigger_store)
     registry.register(SystemTestModule())
     registry.register(SystemVolumeModule())
+    registry.register(SystemMediaControlModule())
     registry.register(SystemWindowControlModule())
     registry.register(SystemAppLauncherModule())
     return registry
