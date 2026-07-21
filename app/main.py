@@ -27,6 +27,7 @@ from app.voice.listening_mode import ListeningMode
 from app.voice.stt_vosk import VoskSTT
 from app.voice.tts_silero import SileroTTS
 from app.core.log_bus import add_log, get_logs
+from app.core.command_text import is_exit_command, is_tts_test_command
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -36,7 +37,7 @@ LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8787
 AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS = 3.0
 AI_LONG_LISTENING_MAX_DURATION_SECONDS = 60.0
-AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 8.0
+AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 
 AI_WAKE_RESPONSES = [
@@ -807,34 +808,34 @@ def main() -> None:
             add_log("Речь распознана", meta={"text": text, "mode": current_mode})
             emit_event("speech.recognized", payload={"text": text, "mode": current_mode})
 
-            if "выход" in text:
-                print("👋 Завершаю.")
-                add_log("Команда выхода получена")
-                break
-
-            if "тест" in text or "говори" in text:
-                add_log("Запущен тест TTS", meta={"text": text})
-
-                long_text = (
-                    "Хорошо, начинаю замолчи длинную проверку голоса. "
-                    "Сейчас я буду хватит говорить несколько стоп предложений подряд, "
-                    "а ты можешь в любой момент сказать стоп. "
-                    "Если всё стоп работает правильно, я должна хватит замолчать сразу, "
-                    "не договаривая замолчи текущий текст до конца. "
-                    "Это нужно для нормального голосового ассистента."
-                )
-
-                add_log("TTS начал говорить", meta={"source": "tts_test"})
-                emit_event("tts.started", payload={"source": "tts_test"})
-                restore_volume()
-                tts.speak(long_text, on_finish=after_tts_finished)
-                start_stop_listener()
-                continue
-
             if current_mode == "command":
                 print("⚡ Локальная команда")
                 add_log("Локальная команда распознана", meta={"text": text})
                 emit_event("command.received", payload={"text": text})
+
+                if is_exit_command(text):
+                    print("👋 Завершаю.")
+                    add_log("Команда выхода получена")
+                    break
+
+                if is_tts_test_command(text):
+                    add_log("Запущен тест TTS", meta={"text": text})
+
+                    long_text = (
+                        "Хорошо, начинаю замолчи длинную проверку голоса. "
+                        "Сейчас я буду хватит говорить несколько стоп предложений подряд, "
+                        "а ты можешь в любой момент сказать стоп. "
+                        "Если всё стоп работает правильно, я должна хватит замолчать сразу, "
+                        "не договаривая замолчи текущий текст до конца. "
+                        "Это нужно для нормального голосового ассистента."
+                    )
+
+                    add_log("TTS начал говорить", meta={"source": "tts_test"})
+                    emit_event("tts.started", payload={"source": "tts_test"})
+                    restore_volume()
+                    tts.speak(long_text, on_finish=after_tts_finished)
+                    start_stop_listener()
+                    continue
 
                 route_result = command_router.route(text)
 
