@@ -3,7 +3,6 @@ import random
 import threading
 import time
 from dataclasses import asdict
-from getpass import getpass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
@@ -20,7 +19,7 @@ from app.media_control.store import MusicPresetStore
 from app.modules.registry import ModuleRegistry, create_default_registry
 from app.router.command_router import CommandRouter
 from app.settings.trigger_store import TriggerStore
-from app.storage.local_store import save_session
+from app.storage.local_store import load_session, save_session
 from app.voice.audio_ducking import duck_volume, restore_volume
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
@@ -500,26 +499,30 @@ def main() -> None:
     emit_event("assistant.mode.changed", payload={"mode": "WAKE_WORD"})
 
     auth = AuthClient()
-    session = auth.get_saved_session()
+    user = auth.require_current_user()
+    stored_session = load_session()
+    user_id = str(user["id"])
+    previous_user_id = str(stored_session.get("user_id", ""))
+    session = {
+        "user_id": user_id,
+        "username": user.get("username", ""),
+        "email": user.get("email", ""),
+        "session_id": (
+            stored_session.get("session_id")
+            if previous_user_id == user_id
+            else None
+        ),
+    }
 
-    if not session.get("user_id"):
-        print("🔐 Нужно войти в аккаунт.")
-        add_log("Требуется вход в аккаунт", level="warn")
-
-        email = input("Email: ").strip()
-        password = getpass("Пароль: ")
-
-        session = auth.login(email=email, password=password)
-
-        print(f"✅ Вход выполнен: {session['username']}")
-        add_log("Вход выполнен", meta={"username": session.get("username")})
-    else:
-        print(f"✅ Сессия найдена: {session.get('username')}")
-        add_log("Сессия найдена", meta={"username": session.get("username")})
+    print(f"✅ Desktop-сессия подтверждена: {session['username']}")
+    add_log(
+        "Desktop-сессия подтверждена",
+        meta={"username": session.get("username")},
+    )
 
     neuro = NeuroClient(
-        user_id=session["user_id"],
         session_id=session.get("session_id"),
+        desktop_token=auth.desktop_token,
     )
     add_log("NeuroClient готов", meta={"user_id": session.get("user_id")})
     emit_event("ai.client.ready")
