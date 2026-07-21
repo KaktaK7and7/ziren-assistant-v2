@@ -10,7 +10,14 @@ from urllib.parse import unquote
 from app.app_launcher.cache import AppLauncherCache
 from app.app_launcher.models import AppTarget
 from app.api.auth_client import AuthClient
+from app.api.local_security import (
+    DEFAULT_LOCAL_API_ORIGINS,
+    LOCAL_TOKEN_HEADER,
+    get_local_auth_error,
+    is_allowed_local_origin,
+)
 from app.api.neuro_client import NeuroClient
+from app.config.settings import LOCAL_API_TOKEN_ENV, get_local_api_token
 from app.events.event_bus import emit_event, get_events
 from app.features.feature_gate import FeatureGate
 from app.media_control.models import MusicPreset
@@ -34,6 +41,7 @@ VOSK_MODEL_PATH = BASE_DIR / "models" / "vosk" / "vosk-model-small-ru-0.22"
 
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8787
+LOCAL_API_MAX_BODY_BYTES = 1024 * 1024
 AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS = 3.0
 AI_LONG_LISTENING_MAX_DURATION_SECONDS = 60.0
 AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
@@ -96,6 +104,7 @@ def start_local_api(
     stt: VoskSTT,
     registry: ModuleRegistry,
     trigger_store: TriggerStore,
+    local_api_token: str,
 ) -> ThreadingHTTPServer:
     app_launcher_cache = AppLauncherCache()
     music_preset_store = MusicPresetStore()
@@ -110,12 +119,34 @@ def start_local_api(
 
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = str(self.headers.get("Origin", "")).strip()
+
+            if origin in DEFAULT_LOCAL_API_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+
             self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                f"Content-Type, {LOCAL_TOKEN_HEADER}",
+            )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def authorize_request(self) -> bool:
+            auth_error = get_local_auth_error(
+                self.headers.get("Origin"),
+                self.headers.get(LOCAL_TOKEN_HEADER),
+                local_api_token,
+            )
+
+            if auth_error is None:
+                return True
+
+            status, error = auth_error
+            self.send_json({"ok": False, "error": error}, status=status)
+            return False
 
         def send_bad_request(self, error: str) -> None:
             self.send_json({"ok": False, "error": error}, status=400)
@@ -126,7 +157,7 @@ def start_local_api(
             except ValueError:
                 return None
 
-            if content_length <= 0:
+            if content_length <= 0 or content_length > LOCAL_API_MAX_BODY_BYTES:
                 return None
 
             try:
@@ -149,9 +180,16 @@ def start_local_api(
             return registry.build_feature_trigger_response(module)
 
         def do_OPTIONS(self) -> None:
+            if not is_allowed_local_origin(self.headers.get("Origin")):
+                self.send_json({"ok": False, "error": "Origin is not allowed"}, status=403)
+                return
+
             self.send_json({"ok": True})
 
         def do_GET(self) -> None:
+            if not self.authorize_request():
+                return
+
             if self.path == "/health":
                 self.send_json({"ok": True})
                 return
@@ -194,6 +232,9 @@ def start_local_api(
             self.send_json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:
+            if not self.authorize_request():
+                return
+
             if self.path == "/features/triggers":
                 data = self.read_json_body()
 
@@ -424,6 +465,9 @@ def start_local_api(
             self.send_json({"error": "not found"}, status=404)
 
         def do_DELETE(self) -> None:
+            if not self.authorize_request():
+                return
+
             if self.path.startswith("/app-launcher/apps/"):
                 target_id = unquote(self.path.removeprefix("/app-launcher/apps/"))
 
@@ -488,6 +532,13 @@ def start_local_api(
 
 
 def main() -> None:
+    local_api_token = get_local_api_token()
+
+    if not local_api_token:
+        raise RuntimeError(
+            f"Local API token is missing ({LOCAL_API_TOKEN_ENV})"
+        )
+
     control = AssistantControlState()
 
     state = AudioState()
@@ -552,7 +603,13 @@ def main() -> None:
         sample_rate=48000,
     )
 
-    local_api_server = start_local_api(control, stt, registry, trigger_store)
+    local_api_server = start_local_api(
+        control,
+        stt,
+        registry,
+        trigger_store,
+        local_api_token,
+    )
     ai_followup_waiting = False
     ai_long_listening_requested = False
     ai_long_listening_initial_timeout_seconds = AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS
