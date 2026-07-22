@@ -3,9 +3,13 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.api.desktop_auth import (
+    desktop_authorization_headers,
+    normalize_desktop_token,
+)
 from app.app_launcher.debug import app_debug_step
 from app.app_launcher.models import AppTarget
-from app.config.settings import AI_SERVICE_URL
+from app.config.settings import AUTH_SITE_URL, get_desktop_token
 
 
 @dataclass
@@ -20,8 +24,17 @@ class AppAIDisambiguator:
     MIN_CONFIDENCE = 0.82
     MAX_CANDIDATES = 40
 
-    def __init__(self, ai_service_url: str = AI_SERVICE_URL, timeout: float = 8.0) -> None:
-        self.client = httpx.Client(base_url=ai_service_url, timeout=timeout)
+    def __init__(
+        self,
+        gateway_url: str = AUTH_SITE_URL,
+        desktop_token: str | None = None,
+        timeout: float = 8.0,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.desktop_token = normalize_desktop_token(
+            desktop_token or get_desktop_token()
+        )
+        self.client = client or httpx.Client(base_url=gateway_url, timeout=timeout)
 
     def choose(
         self,
@@ -48,7 +61,7 @@ class AppAIDisambiguator:
             app_debug_step(
                 "ai request",
                 {
-                    "url": f"{AI_SERVICE_URL}/app-launcher/resolve",
+                    "url": f"{AUTH_SITE_URL}/api/assistant/app-launcher/resolve",
                     "query": query,
                     "candidates_count": len(limited_candidates),
                     "candidate_names": [
@@ -58,7 +71,8 @@ class AppAIDisambiguator:
                 },
             )
             response = self.client.post(
-                "/app-launcher/resolve",
+                "/api/assistant/app-launcher/resolve",
+                headers=desktop_authorization_headers(self.desktop_token),
                 json=request_payload,
             )
             app_debug_step(

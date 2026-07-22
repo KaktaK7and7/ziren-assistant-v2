@@ -3,7 +3,6 @@ import random
 import threading
 import time
 from dataclasses import asdict
-from getpass import getpass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
@@ -11,7 +10,14 @@ from urllib.parse import unquote
 from app.app_launcher.cache import AppLauncherCache
 from app.app_launcher.models import AppTarget
 from app.api.auth_client import AuthClient
+from app.api.local_security import (
+    DEFAULT_LOCAL_API_ORIGINS,
+    LOCAL_TOKEN_HEADER,
+    get_local_auth_error,
+    is_allowed_local_origin,
+)
 from app.api.neuro_client import NeuroClient
+from app.config.settings import LOCAL_API_TOKEN_ENV, get_local_api_token
 from app.events.event_bus import emit_event, get_events
 from app.features.feature_gate import FeatureGate
 from app.media_control.models import MusicPreset
@@ -20,13 +26,14 @@ from app.media_control.store import MusicPresetStore
 from app.modules.registry import ModuleRegistry, create_default_registry
 from app.router.command_router import CommandRouter
 from app.settings.trigger_store import TriggerStore
-from app.storage.local_store import save_session
+from app.storage.local_store import load_session, save_session
 from app.voice.audio_ducking import duck_volume, restore_volume
 from app.voice.audio_state import AudioState
 from app.voice.listening_mode import ListeningMode
 from app.voice.stt_vosk import VoskSTT
 from app.voice.tts_silero import SileroTTS
 from app.core.log_bus import add_log, get_logs
+from app.core.command_text import is_exit_command, is_tts_test_command
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -34,9 +41,10 @@ VOSK_MODEL_PATH = BASE_DIR / "models" / "vosk" / "vosk-model-small-ru-0.22"
 
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8787
+LOCAL_API_MAX_BODY_BYTES = 1024 * 1024
 AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS = 3.0
 AI_LONG_LISTENING_MAX_DURATION_SECONDS = 60.0
-AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 8.0
+AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 
 AI_WAKE_RESPONSES = [
@@ -96,6 +104,7 @@ def start_local_api(
     stt: VoskSTT,
     registry: ModuleRegistry,
     trigger_store: TriggerStore,
+    local_api_token: str,
 ) -> ThreadingHTTPServer:
     app_launcher_cache = AppLauncherCache()
     music_preset_store = MusicPresetStore()
@@ -110,12 +119,34 @@ def start_local_api(
 
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = str(self.headers.get("Origin", "")).strip()
+
+            if origin in DEFAULT_LOCAL_API_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+
             self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                f"Content-Type, {LOCAL_TOKEN_HEADER}",
+            )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def authorize_request(self) -> bool:
+            auth_error = get_local_auth_error(
+                self.headers.get("Origin"),
+                self.headers.get(LOCAL_TOKEN_HEADER),
+                local_api_token,
+            )
+
+            if auth_error is None:
+                return True
+
+            status, error = auth_error
+            self.send_json({"ok": False, "error": error}, status=status)
+            return False
 
         def send_bad_request(self, error: str) -> None:
             self.send_json({"ok": False, "error": error}, status=400)
@@ -126,7 +157,7 @@ def start_local_api(
             except ValueError:
                 return None
 
-            if content_length <= 0:
+            if content_length <= 0 or content_length > LOCAL_API_MAX_BODY_BYTES:
                 return None
 
             try:
@@ -149,9 +180,16 @@ def start_local_api(
             return registry.build_feature_trigger_response(module)
 
         def do_OPTIONS(self) -> None:
+            if not is_allowed_local_origin(self.headers.get("Origin")):
+                self.send_json({"ok": False, "error": "Origin is not allowed"}, status=403)
+                return
+
             self.send_json({"ok": True})
 
         def do_GET(self) -> None:
+            if not self.authorize_request():
+                return
+
             if self.path == "/health":
                 self.send_json({"ok": True})
                 return
@@ -194,6 +232,9 @@ def start_local_api(
             self.send_json({"error": "not found"}, status=404)
 
         def do_POST(self) -> None:
+            if not self.authorize_request():
+                return
+
             if self.path == "/features/triggers":
                 data = self.read_json_body()
 
@@ -424,6 +465,9 @@ def start_local_api(
             self.send_json({"error": "not found"}, status=404)
 
         def do_DELETE(self) -> None:
+            if not self.authorize_request():
+                return
+
             if self.path.startswith("/app-launcher/apps/"):
                 target_id = unquote(self.path.removeprefix("/app-launcher/apps/"))
 
@@ -488,6 +532,13 @@ def start_local_api(
 
 
 def main() -> None:
+    local_api_token = get_local_api_token()
+
+    if not local_api_token:
+        raise RuntimeError(
+            f"Local API token is missing ({LOCAL_API_TOKEN_ENV})"
+        )
+
     control = AssistantControlState()
 
     state = AudioState()
@@ -499,26 +550,30 @@ def main() -> None:
     emit_event("assistant.mode.changed", payload={"mode": "WAKE_WORD"})
 
     auth = AuthClient()
-    session = auth.get_saved_session()
+    user = auth.require_current_user()
+    stored_session = load_session()
+    user_id = str(user["id"])
+    previous_user_id = str(stored_session.get("user_id", ""))
+    session = {
+        "user_id": user_id,
+        "username": user.get("username", ""),
+        "email": user.get("email", ""),
+        "session_id": (
+            stored_session.get("session_id")
+            if previous_user_id == user_id
+            else None
+        ),
+    }
 
-    if not session.get("user_id"):
-        print("🔐 Нужно войти в аккаунт.")
-        add_log("Требуется вход в аккаунт", level="warn")
-
-        email = input("Email: ").strip()
-        password = getpass("Пароль: ")
-
-        session = auth.login(email=email, password=password)
-
-        print(f"✅ Вход выполнен: {session['username']}")
-        add_log("Вход выполнен", meta={"username": session.get("username")})
-    else:
-        print(f"✅ Сессия найдена: {session.get('username')}")
-        add_log("Сессия найдена", meta={"username": session.get("username")})
+    print(f"✅ Desktop-сессия подтверждена: {session['username']}")
+    add_log(
+        "Desktop-сессия подтверждена",
+        meta={"username": session.get("username")},
+    )
 
     neuro = NeuroClient(
-        user_id=session["user_id"],
         session_id=session.get("session_id"),
+        desktop_token=auth.desktop_token,
     )
     add_log("NeuroClient готов", meta={"user_id": session.get("user_id")})
     emit_event("ai.client.ready")
@@ -548,7 +603,13 @@ def main() -> None:
         sample_rate=48000,
     )
 
-    local_api_server = start_local_api(control, stt, registry, trigger_store)
+    local_api_server = start_local_api(
+        control,
+        stt,
+        registry,
+        trigger_store,
+        local_api_token,
+    )
     ai_followup_waiting = False
     ai_long_listening_requested = False
     ai_long_listening_initial_timeout_seconds = AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS
@@ -807,34 +868,34 @@ def main() -> None:
             add_log("Речь распознана", meta={"text": text, "mode": current_mode})
             emit_event("speech.recognized", payload={"text": text, "mode": current_mode})
 
-            if "выход" in text:
-                print("👋 Завершаю.")
-                add_log("Команда выхода получена")
-                break
-
-            if "тест" in text or "говори" in text:
-                add_log("Запущен тест TTS", meta={"text": text})
-
-                long_text = (
-                    "Хорошо, начинаю замолчи длинную проверку голоса. "
-                    "Сейчас я буду хватит говорить несколько стоп предложений подряд, "
-                    "а ты можешь в любой момент сказать стоп. "
-                    "Если всё стоп работает правильно, я должна хватит замолчать сразу, "
-                    "не договаривая замолчи текущий текст до конца. "
-                    "Это нужно для нормального голосового ассистента."
-                )
-
-                add_log("TTS начал говорить", meta={"source": "tts_test"})
-                emit_event("tts.started", payload={"source": "tts_test"})
-                restore_volume()
-                tts.speak(long_text, on_finish=after_tts_finished)
-                start_stop_listener()
-                continue
-
             if current_mode == "command":
                 print("⚡ Локальная команда")
                 add_log("Локальная команда распознана", meta={"text": text})
                 emit_event("command.received", payload={"text": text})
+
+                if is_exit_command(text):
+                    print("👋 Завершаю.")
+                    add_log("Команда выхода получена")
+                    break
+
+                if is_tts_test_command(text):
+                    add_log("Запущен тест TTS", meta={"text": text})
+
+                    long_text = (
+                        "Хорошо, начинаю замолчи длинную проверку голоса. "
+                        "Сейчас я буду хватит говорить несколько стоп предложений подряд, "
+                        "а ты можешь в любой момент сказать стоп. "
+                        "Если всё стоп работает правильно, я должна хватит замолчать сразу, "
+                        "не договаривая замолчи текущий текст до конца. "
+                        "Это нужно для нормального голосового ассистента."
+                    )
+
+                    add_log("TTS начал говорить", meta={"source": "tts_test"})
+                    emit_event("tts.started", payload={"source": "tts_test"})
+                    restore_volume()
+                    tts.speak(long_text, on_finish=after_tts_finished)
+                    start_stop_listener()
+                    continue
 
                 route_result = command_router.route(text)
 
