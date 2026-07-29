@@ -8,6 +8,10 @@ from app.api.desktop_auth import (
 from app.config.settings import AUTH_SITE_URL, DESKTOP_TOKEN_ENV, get_desktop_token
 
 
+class NeuroAuthenticationError(RuntimeError):
+    """The desktop session is no longer accepted by the assistant gateway."""
+
+
 class NeuroClient:
     def __init__(
         self,
@@ -41,6 +45,11 @@ class NeuroClient:
                 "session_id": self.session_id,
             },
         )
+
+        if response.status_code in (401, 403):
+            raise NeuroAuthenticationError(
+                "Desktop session is no longer authorized"
+            )
 
         response.raise_for_status()
         data = response.json()

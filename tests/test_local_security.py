@@ -13,6 +13,7 @@ class LocalSecurityTests(unittest.TestCase):
             with self.subTest(origin=origin):
                 self.assertTrue(is_allowed_local_origin(origin))
 
+        self.assertTrue(is_allowed_local_origin("http://127.0.0.1:1420"))
         self.assertTrue(is_allowed_local_origin(None))
         self.assertFalse(is_allowed_local_origin("https://attacker.example"))
 

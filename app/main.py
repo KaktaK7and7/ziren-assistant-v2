@@ -16,7 +16,7 @@ from app.api.local_security import (
     get_local_auth_error,
     is_allowed_local_origin,
 )
-from app.api.neuro_client import NeuroClient
+from app.api.neuro_client import NeuroAuthenticationError, NeuroClient
 from app.config.settings import LOCAL_API_TOKEN_ENV, get_local_api_token
 from app.events.event_bus import emit_event, get_events
 from app.features.feature_gate import FeatureGate
@@ -948,6 +948,28 @@ def main() -> None:
                     tts.speak(answer, on_finish=after_ai_tts_finished)
                     start_stop_listener()
                     wait_for_tts_to_finish()
+
+                except NeuroAuthenticationError as e:
+                    print(f"❌ Desktop-сессия устарела: {e}")
+                    add_log(
+                        "Требуется повторный вход в Ziren",
+                        level="error",
+                        meta={"error": str(e)},
+                    )
+                    emit_event(
+                        "ai.authentication_required",
+                        payload={"error": str(e)},
+                        level="error",
+                    )
+
+                    add_log("TTS начал говорить", meta={"source": "auth_error"})
+                    emit_event("tts.started", payload={"source": "auth_error"})
+                    restore_volume()
+                    tts.speak(
+                        "Сессия Ziren устарела. Перезайди в аккаунт.",
+                        on_finish=after_tts_finished,
+                    )
+                    start_stop_listener()
 
                 except Exception as e:
                     print(f"❌ Ошибка нейро-модуля: {e}")
