@@ -8,7 +8,9 @@ DEFAULT_LOCAL_API_ORIGINS = frozenset(
         "http://tauri.localhost",
         "https://tauri.localhost",
         "http://localhost:1420",
+        "http://127.0.0.1:1420",
         "http://localhost:5173",
+        "http://127.0.0.1:5173",
     }
 )
 
