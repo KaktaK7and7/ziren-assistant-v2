@@ -45,7 +45,7 @@ class SystemVolumeModule(AssistantModule):
             return self._handle_volume(text)
         except Exception as error:
             return ModuleResponse(
-                text=f"Не смог изменить громкость. Ошибка: {error}"
+                text=f"Не смогла изменить громкость. Ошибка: {error}"
             )
 
     def _handle_volume(self, text: str) -> ModuleResponse:
@@ -64,7 +64,7 @@ class SystemVolumeModule(AssistantModule):
             percent = self._extract_percent(text)
 
             if percent is None:
-                return ModuleResponse(text="Не понял, какую громкость поставить.")
+                return ModuleResponse(text="Не поняла, какую громкость поставить.")
 
             self._set_volume_percent(volume, percent)
             return ModuleResponse(
@@ -77,17 +77,17 @@ class SystemVolumeModule(AssistantModule):
             new_value = min(100, current + 10)
             self._set_volume_percent(volume, new_value)
             return ModuleResponse(
-                text=f"Сделал громче. Сейчас {new_value} процентов."
+                text=f"Сделала громче. Сейчас {new_value} процентов."
             )
 
         if self._matches_action(text, "volume.down"):
             new_value = max(0, current - 10)
             self._set_volume_percent(volume, new_value)
             return ModuleResponse(
-                text=f"Сделал тише. Сейчас {new_value} процентов."
+                text=f"Сделала тише. Сейчас {new_value} процентов."
             )
 
-        return ModuleResponse(text="Не понял команду громкости.")
+        return ModuleResponse(text="Не поняла команду громкости.")
 
     def _matches_action(self, text: str, action_id: str) -> bool:
         return any(trigger in text for trigger in self.get_action_triggers(action_id))
@@ -123,7 +123,7 @@ class SystemVolumeModule(AssistantModule):
                 return endpoint
 
         raise RuntimeError(
-            f"Не нашёл audio endpoint с Activate(). Тип объекта: {type(speakers)}"
+            f"Не нашла audio endpoint с Activate(). Тип объекта: {type(speakers)}"
         )
 
     def _get_current_percent(self, volume) -> int:

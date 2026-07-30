@@ -45,6 +45,19 @@ class ModuleRegistry:
             for module in self._modules
         ]
 
+    def get_ai_capabilities(self) -> list[dict]:
+        return [
+            {
+                "feature_id": module.feature_id,
+                "display_name": module.display_name,
+                "actions": [
+                    str(group.get("display_name", action_id))
+                    for action_id, group in module.get_trigger_groups().items()
+                ][:16],
+            }
+            for module in self._modules
+        ]
+
     def build_feature_trigger_response(self, module: AssistantModule) -> dict:
         trigger_groups = module.get_trigger_groups()
 
