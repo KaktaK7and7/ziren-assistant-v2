@@ -6,6 +6,7 @@ silero
 numpy
 python-Levenshtein
 httpx
+Pillow
 python-dotenv
 fastapi
 uvicorn

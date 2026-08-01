@@ -46,7 +46,7 @@ class ModuleRegistry:
         ]
 
     def get_ai_capabilities(self) -> list[dict]:
-        return [
+        module_capabilities = [
             {
                 "feature_id": module.feature_id,
                 "display_name": module.display_name,
@@ -56,6 +56,18 @@ class ModuleRegistry:
                 ][:16],
             }
             for module in self._modules
+        ]
+
+        return [
+            *module_capabilities,
+            {
+                "feature_id": "screen.analysis",
+                "display_name": "Разовый анализ экрана",
+                "actions": [
+                    "Сделать снимок основного экрана только по явной просьбе",
+                    "Объяснить видимые элементы и предложить следующие шаги",
+                ],
+            },
         ]
 
     def build_feature_trigger_response(self, module: AssistantModule) -> dict:
