@@ -59,6 +59,31 @@ class NeuroClientTests(unittest.TestCase):
         with self.assertRaises(NeuroAuthenticationError):
             client.send_message("ты тут")
 
+    def test_sends_screenshot_only_to_explicit_vision_route(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = __import__("json").loads(request.content)
+            self.assertEqual(request.url.path, "/api/assistant/vision")
+            self.assertEqual(payload["message"], "что на экране")
+            self.assertTrue(
+                payload["image_data_url"].startswith(
+                    "data:image/jpeg;base64,",
+                ),
+            )
+            return httpx.Response(
+                200,
+                json={"answer": "Вижу окно настроек.", "session_id": 8},
+            )
+
+        client = self.make_client(handler)
+
+        answer = client.send_screen_message(
+            "что на экране",
+            "data:image/jpeg;base64,/9j/",
+        )
+
+        self.assertEqual(answer, "Вижу окно настроек.")
+        self.assertEqual(client.session_id, 8)
+
     def test_requests_command_reactions_and_proactive_lines(self) -> None:
         requested_paths = []
 

@@ -36,6 +36,11 @@ from app.voice.stt_vosk import VoskSTT
 from app.voice.tts_silero import SileroTTS
 from app.core.log_bus import add_log, get_logs
 from app.core.command_text import is_exit_command, is_tts_test_command
+from app.core.command_speech import choose_command_speech
+from app.vision.screen_capture import (
+    capture_primary_screen,
+    is_screen_analysis_request,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -48,6 +53,7 @@ AI_LONG_LISTENING_SILENCE_TIMEOUT_SECONDS = 3.0
 AI_LONG_LISTENING_MAX_DURATION_SECONDS = 60.0
 AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
+COMMAND_REACTION_WAIT_SECONDS = 6.0
 
 AI_WAKE_RESPONSES = [
     "Я здесь.",
@@ -695,23 +701,13 @@ def main() -> None:
             )
             return {}
 
-    def maybe_get_command_reaction(
-        feature_id: str,
-        command_text: str,
-        result_text: str,
-        activity_payload: dict,
-    ) -> str:
-        nonlocal last_command_reaction_at
+    def reserve_command_reaction() -> bool:
         nonlocal command_reaction_pending
 
         settings = companion_settings_store.get()
 
-        if (
-            not settings["command_reactions_enabled"]
-            or not activity_payload.get("stored")
-            or not activity_payload.get("ai_context_allowed")
-        ):
-            return ""
+        if not settings["command_reactions_enabled"]:
+            return False
 
         now = time.time()
         cooldown = settings["command_reaction_cooldown_minutes"] * 60
@@ -720,13 +716,28 @@ def main() -> None:
             if (
                 command_reaction_pending
                 or now - last_command_reaction_at < cooldown
+                or random.random() > settings["command_reaction_chance"]
             ):
-                return ""
-
-            if random.random() > settings["command_reaction_chance"]:
-                return ""
+                return False
 
             command_reaction_pending = True
+            return True
+
+    def maybe_get_command_reaction(
+        feature_id: str,
+        command_text: str,
+        result_text: str,
+        activity_payload: dict,
+    ) -> str:
+        nonlocal command_reaction_pending
+
+        if (
+            not activity_payload.get("stored")
+            or not activity_payload.get("ai_context_allowed")
+        ):
+            with reaction_lock:
+                command_reaction_pending = False
+            return ""
 
         try:
             reaction = neuro.request_command_reaction(
@@ -736,10 +747,6 @@ def main() -> None:
                 capabilities=registry.get_ai_capabilities(),
             ).strip()
             save_neuro_session()
-
-            if reaction:
-                with reaction_lock:
-                    last_command_reaction_at = time.time()
 
             return reaction
         except Exception as error:
@@ -757,71 +764,39 @@ def main() -> None:
         feature_id: str,
         command_text: str,
         result_text: str,
-        response_finished: threading.Event,
-        generation: int,
         allow_reaction: bool,
+        reaction_decided: threading.Event,
+        reaction_result: dict[str, str],
     ) -> None:
-        reaction_deadline = time.monotonic() + 35
-        activity_payload = record_command_activity(feature_id, command_text)
+        reaction_reserved = allow_reaction and reserve_command_reaction()
 
-        if not allow_reaction:
+        if not reaction_reserved:
+            reaction_decided.set()
+            record_command_activity(feature_id, command_text)
             return
 
-        reaction = maybe_get_command_reaction(
-            feature_id,
-            command_text,
-            result_text,
-            activity_payload,
-        )
-
-        reaction_wait_seconds = reaction_deadline - time.monotonic()
-
-        if (
-            not reaction
-            or reaction_wait_seconds <= 0
-            or not response_finished.wait(timeout=reaction_wait_seconds)
-        ):
-            return
-
-        with interaction_lock:
-            user_moved_on = interaction_generation != generation
-
-        if (
-            user_moved_on
-            or not control.is_listening()
-            or state.is_speaking.is_set()
-            or state.was_tts_interrupted()
-        ):
-            add_log(
-                "Комментарий Мелиссы отменён",
-                meta={
-                    "feature_id": feature_id,
-                    "reason": "new_interaction",
-                },
+        try:
+            activity_payload = record_command_activity(feature_id, command_text)
+            reaction_result["text"] = maybe_get_command_reaction(
+                feature_id,
+                command_text,
+                result_text,
+                activity_payload,
             )
-            return
-
-        add_log(
-            "Мелисса комментирует выполненную команду",
-            meta={"feature_id": feature_id},
-        )
-        emit_event(
-            "ai.command_reaction.generated",
-            payload={"feature_id": feature_id},
-        )
-        restore_volume()
-        tts.speak(reaction, on_finish=after_tts_finished)
-
-        if state.is_speaking.is_set():
-            neuro.mark_companion_line_delivered(reaction)
-
-        start_stop_listener()
+        finally:
+            reaction_decided.set()
 
     def execute_local_command(
         text: str,
         explicit_only: bool = False,
         allow_reaction: bool = True,
-    ) -> tuple[str, str, threading.Event] | None:
+    ) -> tuple[
+        str,
+        str,
+        threading.Event,
+        threading.Event,
+        dict[str, str],
+    ] | None:
         route_result = (
             command_router.route_explicit(text)
             if explicit_only
@@ -842,9 +817,8 @@ def main() -> None:
             payload={"text": text, "feature_id": feature_id},
         )
         response_finished = threading.Event()
-
-        with interaction_lock:
-            generation = interaction_generation
+        reaction_decided = threading.Event()
+        reaction_result: dict[str, str] = {"text": ""}
 
         threading.Thread(
             target=process_command_context,
@@ -852,15 +826,21 @@ def main() -> None:
                 feature_id,
                 text,
                 response_text,
-                response_finished,
-                generation,
                 allow_reaction,
+                reaction_decided,
+                reaction_result,
             ),
             daemon=True,
             name=f"command-context-{feature_id}",
         ).start()
 
-        return response_text, feature_id, response_finished
+        return (
+            response_text,
+            feature_id,
+            response_finished,
+            reaction_decided,
+            reaction_result,
+        )
 
     def request_ai_long_listening(source: str, initial_timeout_seconds: float) -> None:
         nonlocal ai_long_listening_requested
@@ -1296,25 +1276,67 @@ def main() -> None:
                 command_result = execute_local_command(text)
 
                 if command_result:
-                    response_text, _, response_finished = command_result
+                    (
+                        response_text,
+                        feature_id,
+                        response_finished,
+                        reaction_decided,
+                        reaction_result,
+                    ) = command_result
+                    reaction_ready = reaction_decided.wait(
+                        timeout=COMMAND_REACTION_WAIT_SECONDS,
+                    )
+                    spoken_text, uses_ai_reaction = choose_command_speech(
+                        response_text,
+                        reaction_ready,
+                        reaction_result.get("text", ""),
+                    )
+                    reaction_text = spoken_text if uses_ai_reaction else ""
                     command_finish_callback = (
                         lambda event=response_finished: (
                             after_local_command_tts_finished(event)
                         )
                     )
+
+                    if reaction_text:
+                        with reaction_lock:
+                            last_command_reaction_at = time.time()
+                        add_log(
+                            "Стандартный ответ заменён репликой Мелиссы",
+                            meta={"feature_id": feature_id},
+                        )
+                        emit_event(
+                            "ai.command_reaction.generated",
+                            payload={"feature_id": feature_id},
+                        )
+                    elif not reaction_ready:
+                        add_log(
+                            "Комментарий Мелиссы не успел к ответу команды",
+                            meta={"feature_id": feature_id},
+                        )
                 else:
-                    response_text = "Команда пока не распознана."
+                    spoken_text = "Команда пока не распознана."
+                    reaction_text = ""
                     command_finish_callback = after_tts_finished
                     add_log("Команда не распознана", level="warn", meta={"text": text})
                     emit_event("command.unknown", payload={"text": text}, level="warn")
 
-                add_log("TTS начал говорить", meta={"source": "local_command"})
-                emit_event("tts.started", payload={"source": "local_command"})
+                speech_source = (
+                    "ai_command_reaction"
+                    if reaction_text
+                    else "local_command"
+                )
+                add_log("TTS начал говорить", meta={"source": speech_source})
+                emit_event("tts.started", payload={"source": speech_source})
                 restore_volume()
                 tts.speak(
-                    response_text,
+                    spoken_text,
                     on_finish=command_finish_callback,
                 )
+
+                if reaction_text and state.is_speaking.is_set():
+                    neuro.mark_companion_line_delivered(reaction_text)
+
                 start_stop_listener()
                 continue
 
@@ -1326,7 +1348,13 @@ def main() -> None:
                 )
 
                 if command_result:
-                    response_text, feature_id, response_finished = command_result
+                    (
+                        response_text,
+                        feature_id,
+                        response_finished,
+                        _,
+                        _,
+                    ) = command_result
                     add_log(
                         "Мелисса передала команду локальному ядру",
                         meta={"text": text, "feature_id": feature_id},
@@ -1351,12 +1379,40 @@ def main() -> None:
                 print("🧠 Отправляю в нейро-модуль...")
                 add_log("AI-запрос отправлен", meta={"text": text})
                 emit_event("ai.request.started", payload={"text": text})
+                screen_analysis_requested = is_screen_analysis_request(text)
+                screenshot_prepared = False
 
                 try:
-                    answer = neuro.send_message(
-                        text,
-                        capabilities=registry.get_ai_capabilities(),
-                    )
+                    if screen_analysis_requested:
+                        add_log("Пользователь запросил анализ экрана")
+                        emit_event("screen.capture.requested")
+                        screenshot = capture_primary_screen()
+                        screenshot_prepared = True
+                        add_log(
+                            "Снимок экрана подготовлен",
+                            meta={
+                                "width": screenshot.width,
+                                "height": screenshot.height,
+                                "byte_size": screenshot.byte_size,
+                            },
+                        )
+                        emit_event(
+                            "screen.capture.completed",
+                            payload={
+                                "width": screenshot.width,
+                                "height": screenshot.height,
+                            },
+                        )
+                        answer = neuro.send_screen_message(
+                            text,
+                            screenshot.data_url,
+                            capabilities=registry.get_ai_capabilities(),
+                        )
+                    else:
+                        answer = neuro.send_message(
+                            text,
+                            capabilities=registry.get_ai_capabilities(),
+                        )
                     save_neuro_session()
 
                     print(f"🤖 Мелисса: {answer}")
@@ -1393,15 +1449,45 @@ def main() -> None:
                     start_stop_listener()
 
                 except Exception as e:
-                    print(f"❌ Ошибка нейро-модуля: {e}")
-                    add_log("Ошибка нейро-модуля", level="error", meta={"error": str(e)})
-                    emit_event("ai.error", payload={"error": str(e)}, level="error")
+                    capture_failed = (
+                        screen_analysis_requested
+                        and not screenshot_prepared
+                    )
+                    error_event = (
+                        "screen.capture.failed"
+                        if capture_failed
+                        else "ai.error"
+                    )
+                    error_source = (
+                        "screen_capture_error"
+                        if capture_failed
+                        else "neuro_error"
+                    )
+                    error_speech = (
+                        "Не получилось сделать снимок экрана."
+                        if capture_failed
+                        else "Не смогла связаться с нейро-модулем."
+                    )
+                    print(f"❌ Ошибка обработки AI-запроса: {e}")
+                    add_log(
+                        "Ошибка обработки AI-запроса",
+                        level="error",
+                        meta={
+                            "error": str(e),
+                            "screen_capture": capture_failed,
+                        },
+                    )
+                    emit_event(
+                        error_event,
+                        payload={"error": str(e)},
+                        level="error",
+                    )
 
-                    add_log("TTS начал говорить", meta={"source": "neuro_error"})
-                    emit_event("tts.started", payload={"source": "neuro_error"})
+                    add_log("TTS начал говорить", meta={"source": error_source})
+                    emit_event("tts.started", payload={"source": error_source})
                     restore_volume()
                     tts.speak(
-                        "Не смогла связаться с нейро-модулем.",
+                        error_speech,
                         on_finish=after_tts_finished,
                     )
                     start_stop_listener()

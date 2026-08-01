@@ -140,6 +140,28 @@ class NeuroClient:
 
         return str(data.get("answer", ""))
 
+    def send_screen_message(
+        self,
+        message: str,
+        image_data_url: str,
+        capabilities: list[dict] | None = None,
+    ) -> str:
+        with self._chat_lock:
+            session_id, delivered_lines = self._get_chat_context()
+            data = self._post(
+                "/api/assistant/vision",
+                {
+                    "message": message,
+                    "image_data_url": image_data_url,
+                    "session_id": session_id,
+                    "preceding_assistant_lines": delivered_lines,
+                    "capabilities": capabilities or [],
+                },
+            )
+            self._forget_delivered_lines(delivered_lines)
+
+        return str(data.get("answer", ""))
+
     def request_command_reaction(
         self,
         feature_id: str,
