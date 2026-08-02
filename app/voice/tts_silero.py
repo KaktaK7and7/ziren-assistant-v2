@@ -9,7 +9,12 @@ import torch
 from silero import silero_tts
 
 from app.voice.audio_state import AudioState
-from app.voice.text_utils import clean_text, replace_numbers_with_words, split_long_text
+from app.voice.text_utils import (
+    clean_text,
+    replace_numbers_with_words,
+    split_long_text,
+    transcribe_latin_for_russian_tts,
+)
 
 
 AudioItem = tuple[str, np.ndarray] | None
@@ -69,6 +74,7 @@ class SileroTTS:
             print("🔇 Уже говорю, новая озвучка пропущена.")
             return
 
+        text = transcribe_latin_for_russian_tts(text)
         text = replace_numbers_with_words(text)
         self.state.set_current_tts_text(text)
 

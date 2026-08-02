@@ -7,7 +7,7 @@ from app.settings.companion_store import CompanionSettingsStore
 
 
 class CompanionSettingsStoreTests(unittest.TestCase):
-    def test_proactive_dialogue_is_opt_in_and_values_are_bounded(self) -> None:
+    def test_proactive_dialogue_defaults_on_but_can_be_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings_path = Path(directory) / "companion.json"
 
@@ -18,14 +18,16 @@ class CompanionSettingsStoreTests(unittest.TestCase):
                 store = CompanionSettingsStore()
                 defaults = store.get()
                 updated = store.update({
-                    "proactive_dialogue_enabled": True,
+                    "proactive_dialogue_enabled": False,
                     "command_reaction_chance": 5,
                     "quiet_hours_start": 99,
                     "unknown": "ignored",
                 })
 
-            self.assertFalse(defaults["proactive_dialogue_enabled"])
-            self.assertTrue(updated["proactive_dialogue_enabled"])
+            self.assertTrue(defaults["proactive_dialogue_enabled"])
+            self.assertEqual(defaults["proactive_idle_min_minutes"], 12)
+            self.assertEqual(defaults["proactive_idle_max_minutes"], 30)
+            self.assertFalse(updated["proactive_dialogue_enabled"])
             self.assertEqual(updated["command_reaction_chance"], 1.0)
             self.assertEqual(updated["quiet_hours_start"], 23)
             self.assertNotIn("unknown", updated)
