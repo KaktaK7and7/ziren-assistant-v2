@@ -1,4 +1,6 @@
 import threading
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -12,6 +14,12 @@ from app.config.settings import AUTH_SITE_URL, DESKTOP_TOKEN_ENV, get_desktop_to
 
 class NeuroAuthenticationError(RuntimeError):
     """The desktop session is no longer accepted by the assistant gateway."""
+
+
+@dataclass(frozen=True)
+class NeuroMessageResult:
+    answer: str
+    drawing_request: dict[str, Any] | None = None
 
 
 class NeuroClient:
@@ -39,6 +47,7 @@ class NeuroClient:
         )
         self._session_lock = threading.Lock()
         self._chat_lock = threading.Lock()
+        self._drawing_lock = threading.Lock()
         self._delivered_companion_lines: list[str] = []
 
     def _get_session_id(self) -> int | None:
@@ -95,13 +104,22 @@ class NeuroClient:
                 except ValueError:
                     continue
 
-    def _post(self, path: str, payload: dict) -> dict:
+    def _post(
+        self,
+        path: str,
+        payload: dict,
+        timeout: float | None = None,
+    ) -> dict:
         request_session_id = payload.get("session_id")
-        response = self.client.post(
-            path,
-            headers=self.authorization_headers,
-            json=payload,
-        )
+        request_options = {
+            "headers": self.authorization_headers,
+            "json": payload,
+        }
+
+        if timeout is not None:
+            request_options["timeout"] = timeout
+
+        response = self.client.post(path, **request_options)
 
         if response.status_code in (401, 403):
             raise NeuroAuthenticationError(
@@ -125,6 +143,13 @@ class NeuroClient:
         message: str,
         capabilities: list[dict] | None = None,
     ) -> str:
+        return self.send_message_result(message, capabilities).answer
+
+    def send_message_result(
+        self,
+        message: str,
+        capabilities: list[dict] | None = None,
+    ) -> NeuroMessageResult:
         with self._chat_lock:
             session_id, delivered_lines = self._get_chat_context()
             data = self._post(
@@ -138,7 +163,15 @@ class NeuroClient:
             )
             self._forget_delivered_lines(delivered_lines)
 
-        return str(data.get("answer", ""))
+        drawing_request = data.get("drawing_request")
+        return NeuroMessageResult(
+            answer=str(data.get("answer", "")),
+            drawing_request=(
+                drawing_request
+                if isinstance(drawing_request, dict)
+                else None
+            ),
+        )
 
     def send_screen_message(
         self,
@@ -195,3 +228,14 @@ class NeuroClient:
             },
         )
         return str(data.get("text", ""))
+
+    def generate_drawing(
+        self,
+        drawing_request: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._drawing_lock:
+            return self._post(
+                "/api/assistant/drawings/generate",
+                drawing_request,
+                timeout=125.0,
+            )

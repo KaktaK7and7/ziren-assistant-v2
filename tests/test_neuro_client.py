@@ -84,6 +84,52 @@ class NeuroClientTests(unittest.TestCase):
         self.assertEqual(answer, "Вижу окно настроек.")
         self.assertEqual(client.session_id, 8)
 
+    def test_returns_a_hidden_drawing_request_separately(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/api/assistant/chat")
+            return httpx.Response(
+                200,
+                json={
+                    "answer": "Ладно, набросаю.",
+                    "session_id": 10,
+                    "drawing_request": {
+                        "kind": "technical",
+                        "title": "Робо-рука",
+                        "prompt": "Схема суставов",
+                    },
+                },
+            )
+
+        result = self.make_client(handler).send_message_result(
+            "Нарисуй робо-руку",
+        )
+
+        self.assertEqual(result.answer, "Ладно, набросаю.")
+        self.assertEqual(result.drawing_request["kind"], "technical")
+
+    def test_requests_image_generation_through_the_auth_gateway(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(
+                request.url.path,
+                "/api/assistant/drawings/generate",
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "image_data_url": "data:image/png;base64,test",
+                    "model": "image-test",
+                    "sha256": "abc",
+                },
+            )
+
+        generated = self.make_client(handler).generate_drawing({
+            "kind": "sketch",
+            "title": "Тест",
+            "prompt": "Нарисуй тест",
+        })
+
+        self.assertEqual(generated["model"], "image-test")
+
     def test_requests_command_reactions_and_proactive_lines(self) -> None:
         requested_paths = []
 
