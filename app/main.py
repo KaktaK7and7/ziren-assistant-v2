@@ -20,6 +20,7 @@ from app.api.local_security import (
 from app.api.neuro_client import NeuroAuthenticationError, NeuroClient
 from app.config.settings import LOCAL_API_TOKEN_ENV, get_local_api_token
 from app.events.event_bus import emit_event, get_events
+from app.drawings.store import DrawingStore
 from app.features.feature_gate import FeatureGate
 from app.media_control.models import MusicPreset
 from app.media_control.resolver import MediaResolver
@@ -113,6 +114,7 @@ def start_local_api(
     registry: ModuleRegistry,
     trigger_store: TriggerStore,
     companion_settings_store: CompanionSettingsStore,
+    drawing_store: DrawingStore,
     local_api_token: str,
 ) -> ThreadingHTTPServer:
     app_launcher_cache = AppLauncherCache()
@@ -213,6 +215,33 @@ def start_local_api(
 
             if self.path == "/events":
                 self.send_json({"events": get_events()})
+                return
+
+            if self.path == "/drawings":
+                self.send_json({
+                    "ok": True,
+                    "drawings": drawing_store.list(),
+                })
+                return
+
+            if self.path.startswith("/drawings/"):
+                drawing_id = unquote(
+                    self.path.removeprefix("/drawings/"),
+                )
+
+                try:
+                    drawing = drawing_store.get(drawing_id)
+                except KeyError:
+                    self.send_json(
+                        {"ok": False, "error": "drawing not found"},
+                        status=404,
+                    )
+                    return
+
+                self.send_json({
+                    "ok": True,
+                    "drawing": drawing,
+                })
                 return
 
             if self.path == "/features/triggers":
@@ -610,6 +639,7 @@ def main() -> None:
 
     trigger_store = TriggerStore()
     companion_settings_store = CompanionSettingsStore()
+    drawing_store = DrawingStore(user_id)
     registry = create_default_registry(trigger_store=trigger_store)
 
     command_router = CommandRouter(
@@ -640,6 +670,7 @@ def main() -> None:
         registry,
         trigger_store,
         companion_settings_store,
+        drawing_store,
         local_api_token,
     )
     ai_followup_waiting = False
@@ -660,6 +691,83 @@ def main() -> None:
         with session_lock:
             session["session_id"] = neuro.session_id
             save_session(session)
+
+    def queue_drawing(drawing_request: dict) -> None:
+        title = str(
+            drawing_request.get("title") or "Набросок Мелиссы",
+        )[:80]
+        emit_event(
+            "drawing.generation.started",
+            payload={"title": title},
+        )
+        add_log(
+            "Мелисса начала рисунок",
+            meta={"title": title},
+        )
+
+        def drawing_worker() -> None:
+            try:
+                generated = neuro.generate_drawing(drawing_request)
+                drawing = drawing_store.save(
+                    drawing_request,
+                    generated,
+                )
+                event_payload = {
+                    key: drawing.get(key)
+                    for key in (
+                        "id",
+                        "title",
+                        "kind",
+                        "story_relevant",
+                        "completion_line",
+                        "created_at",
+                    )
+                }
+                emit_event(
+                    "drawing.created",
+                    payload=event_payload,
+                )
+                add_log(
+                    "Рисунок Мелиссы сохранён",
+                    meta={
+                        "drawing_id": drawing.get("id"),
+                        "title": drawing.get("title"),
+                    },
+                )
+            except NeuroAuthenticationError as error:
+                emit_event(
+                    "drawing.generation.failed",
+                    payload={
+                        "title": title,
+                        "reason": "authentication_required",
+                    },
+                    level="error",
+                )
+                add_log(
+                    "Рисунок не создан: требуется повторный вход",
+                    level="error",
+                    meta={"error": str(error)},
+                )
+            except Exception as error:
+                emit_event(
+                    "drawing.generation.failed",
+                    payload={
+                        "title": title,
+                        "reason": "generation_failed",
+                    },
+                    level="error",
+                )
+                add_log(
+                    "Не удалось создать рисунок",
+                    level="error",
+                    meta={"title": title, "error": str(error)},
+                )
+
+        threading.Thread(
+            target=drawing_worker,
+            daemon=True,
+            name="melissa-drawing-worker",
+        ).start()
 
     def mark_user_activity() -> None:
         nonlocal last_user_activity_at
@@ -1409,10 +1517,16 @@ def main() -> None:
                             capabilities=registry.get_ai_capabilities(),
                         )
                     else:
-                        answer = neuro.send_message(
+                        message_result = neuro.send_message_result(
                             text,
                             capabilities=registry.get_ai_capabilities(),
                         )
+                        answer = message_result.answer
+
+                        if message_result.drawing_request:
+                            queue_drawing(
+                                message_result.drawing_request,
+                            )
                     save_neuro_session()
 
                     print(f"🤖 Мелисса: {answer}")
