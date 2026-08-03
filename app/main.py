@@ -39,6 +39,7 @@ from app.core.log_bus import add_log, get_logs
 from app.core.command_text import is_exit_command, is_tts_test_command
 from app.core.command_speech import choose_command_speech
 from app.vision.screen_capture import (
+    build_grounded_screen_data_url,
     capture_primary_screen,
     is_screen_analysis_request,
     is_screen_canvas_request,
@@ -60,6 +61,7 @@ AI_LONG_LISTENING_MAX_DURATION_SECONDS = 60.0
 AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 COMMAND_REACTION_WAIT_SECONDS = 6.0
+SCREEN_CLICK_FOLLOWUP_SECONDS = 2 * 60
 
 AI_WAKE_RESPONSES = [
     "Я здесь.",
@@ -857,6 +859,7 @@ def main() -> None:
     last_user_activity_at = time.time()
     interaction_generation = 0
     last_command_reaction_at = 0.0
+    last_screen_analysis_at = 0.0
     command_reaction_pending = False
     proactive_due_at = last_user_activity_at + random.uniform(20 * 60, 45 * 60)
 
@@ -1660,7 +1663,15 @@ def main() -> None:
                 print("🧠 Отправляю в нейро-модуль...")
                 add_log("AI-запрос отправлен", meta={"text": text})
                 emit_event("ai.request.started", payload={"text": text})
-                screen_analysis_requested = is_screen_analysis_request(text)
+                click_requested = is_screen_click_request(text)
+                screen_analysis_requested = is_screen_analysis_request(
+                    text,
+                    allow_click_followup=(
+                        click_requested
+                        and time.time() - last_screen_analysis_at
+                        <= SCREEN_CLICK_FOLLOWUP_SECONDS
+                    ),
+                )
                 screenshot_prepared = False
 
                 try:
@@ -1684,11 +1695,15 @@ def main() -> None:
                                 "height": screenshot.height,
                             },
                         )
+                        grounded_screenshot_data_url = (
+                            build_grounded_screen_data_url(screenshot)
+                        )
                         screen_result = neuro.send_screen_message(
                             text,
-                            screenshot.data_url,
+                            grounded_screenshot_data_url,
                             capabilities=registry.get_ai_capabilities(),
                         )
+                        last_screen_analysis_at = time.time()
                         answer = screen_result.answer
                         screen_analysis = screen_analysis_store.create(
                             screenshot,
@@ -1698,11 +1713,7 @@ def main() -> None:
                                 "annotations": screen_result.annotations,
                                 "action": screen_result.action,
                             },
-                            click_was_requested=is_screen_click_request(text),
-                        )
-                        emit_event(
-                            "screen.analysis.ready",
-                            payload=screen_analysis,
+                            click_was_requested=click_requested,
                         )
 
                         if is_screen_canvas_request(text):
@@ -1741,6 +1752,69 @@ def main() -> None:
                                     "analysis_id": screen_analysis["id"],
                                     "drawing_id": drawing.get("id"),
                                 },
+                            )
+
+                        click_completed = None
+                        click_failed = None
+                        if (
+                            click_requested
+                            and screen_analysis["action"].get("available")
+                        ):
+                            try:
+                                action = (
+                                    screen_analysis_store.take_requested_click(
+                                        screen_analysis["id"],
+                                    )
+                                )
+                                pixel_x, pixel_y = click_primary_screen(
+                                    action["x"],
+                                    action["y"],
+                                    expected_foreground_window=action.get(
+                                        "foreground_window",
+                                    ),
+                                )
+                                click_completed = {
+                                    "analysis_id": screen_analysis["id"],
+                                    "label": action["label"],
+                                    "pixel_x": pixel_x,
+                                    "pixel_y": pixel_y,
+                                }
+                                answer = f"Нажала «{action['label']}»."
+                                add_log(
+                                    "Мелисса выполнила нажатие по экрану",
+                                    meta=click_completed,
+                                )
+                            except Exception as error:
+                                click_failed = {
+                                    "analysis_id": screen_analysis["id"],
+                                    "error": str(error),
+                                }
+                                answer = (
+                                    "Не нажала: за время анализа активное окно "
+                                    "изменилось. Верни нужное окно на передний "
+                                    "план и повтори команду."
+                                )
+                                add_log(
+                                    "Нажатие по экрану не выполнено",
+                                    level="warn",
+                                    meta=click_failed,
+                                )
+
+                        if click_completed is not None:
+                            emit_event(
+                                "screen.action.completed",
+                                payload=click_completed,
+                            )
+                        elif click_failed is not None:
+                            emit_event(
+                                "screen.action.failed",
+                                payload=click_failed,
+                                level="error",
+                            )
+                        else:
+                            emit_event(
+                                "screen.analysis.ready",
+                                payload=screen_analysis,
                             )
                     else:
                         message_result = neuro.send_message_result(
