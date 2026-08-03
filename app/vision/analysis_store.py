@@ -13,6 +13,8 @@ MAX_ANNOTATIONS = 8
 MAX_ACTIVE_ANALYSES = 4
 ANALYSIS_TTL_SECONDS = 5 * 60
 ACTION_TTL_SECONDS = 90
+MAX_CLICK_TARGET_WIDTH = 0.4
+MAX_CLICK_TARGET_HEIGHT = 0.3
 RISKY_ACTION_MARKERS = (
     "удал",
     "стер",
@@ -208,6 +210,8 @@ class ScreenAnalysisStore:
                 and raw_action.get("risk") == "safe"
                 and target is not None
                 and target.get("kind") in {"target", "step"}
+                and target.get("width", 1) <= MAX_CLICK_TARGET_WIDTH
+                and target.get("height", 1) <= MAX_CLICK_TARGET_HEIGHT
                 and capture.foreground_window is not None
                 and not risky
             )
@@ -221,7 +225,7 @@ class ScreenAnalysisStore:
                     "requested": True,
                     "label": label or target["label"],
                     "risk": "safe",
-                    "reason": reason or "Одно обратимое нажатие.",
+                    "reason": reason or "Одно нажатие по явной команде пользователя.",
                     "expires_in_seconds": ACTION_TTL_SECONDS,
                 }
                 internal_action = {
@@ -339,7 +343,7 @@ class ScreenAnalysisStore:
             item["canvas_drawing_id"] = str(drawing_id)
             item["image_data_url"] = None
 
-    def take_confirmed_click(self, analysis_id: str) -> dict[str, Any]:
+    def take_requested_click(self, analysis_id: str) -> dict[str, Any]:
         now = self._clock()
         with self._lock:
             self._prune_locked(now)
@@ -356,17 +360,21 @@ class ScreenAnalysisStore:
                 > ACTION_TTL_SECONDS
             ):
                 action["used"] = True
-                raise TimeoutError("Click confirmation expired")
+                raise TimeoutError("Click request expired")
 
             action["used"] = True
-            confirmed = {
+            requested = {
                 "x": float(action["x"]),
                 "y": float(action["y"]),
                 "label": str(action["label"]),
                 "foreground_window": action.get("foreground_window"),
             }
             self._drop_locked(str(analysis_id or ""))
-            return confirmed
+            return requested
+
+    def take_confirmed_click(self, analysis_id: str) -> dict[str, Any]:
+        """Compatibility alias for desktop clients from the previous build."""
+        return self.take_requested_click(analysis_id)
 
     def dismiss(self, analysis_id: str) -> None:
         with self._lock:

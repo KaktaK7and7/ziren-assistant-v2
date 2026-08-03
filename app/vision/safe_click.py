@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import time
 
+from app.vision.windows_geometry import enable_per_monitor_dpi_awareness
+
 
 def normalized_to_pixels(
     x: float,
@@ -46,6 +48,7 @@ def click_primary_screen(
     import ctypes
     from ctypes import wintypes
 
+    enable_per_monitor_dpi_awareness()
     user32 = ctypes.windll.user32
     if expected_foreground_window:
         if not user32.IsWindow(expected_foreground_window):

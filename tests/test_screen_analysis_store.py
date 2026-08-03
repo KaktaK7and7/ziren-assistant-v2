@@ -56,13 +56,13 @@ class ScreenAnalysisStoreTests(unittest.TestCase):
         )
         self.assertTrue(active["action"]["available"])
         self.assertTrue(active["action"]["requested"])
-        click = store.take_confirmed_click(active["id"])
+        click = store.take_requested_click(active["id"])
         self.assertAlmostEqual(click["x"], 0.8)
         self.assertAlmostEqual(click["y"], 0.8)
         self.assertEqual(click["foreground_window"], 713)
 
         with self.assertRaises(KeyError):
-            store.take_confirmed_click(active["id"])
+            store.take_requested_click(active["id"])
 
     def test_risky_action_is_blocked_even_if_model_marks_it_safe(self) -> None:
         result = ScreenAnalysisStore().create(
@@ -70,6 +70,22 @@ class ScreenAnalysisStoreTests(unittest.TestCase):
             make_plan("Удаляем аккаунт"),
             click_was_requested=True,
         )
+        self.assertFalse(result["action"]["available"])
+        self.assertEqual(result["action"]["risk"], "blocked")
+
+    def test_oversized_click_target_is_blocked(self) -> None:
+        plan = make_plan()
+        plan["annotations"][0]["x"] = 0.05
+        plan["annotations"][0]["y"] = 0.05
+        plan["annotations"][0]["width"] = 0.8
+        plan["annotations"][0]["height"] = 0.5
+
+        result = ScreenAnalysisStore().create(
+            make_capture(),
+            plan,
+            click_was_requested=True,
+        )
+
         self.assertFalse(result["action"]["available"])
         self.assertEqual(result["action"]["risk"], "blocked")
 
