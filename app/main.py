@@ -41,7 +41,12 @@ from app.core.command_speech import choose_command_speech
 from app.vision.screen_capture import (
     capture_primary_screen,
     is_screen_analysis_request,
+    is_screen_canvas_request,
+    is_screen_click_request,
 )
+from app.vision.analysis_store import ScreenAnalysisStore
+from app.vision.annotated_capture import render_annotated_capture
+from app.vision.safe_click import click_primary_screen
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -115,6 +120,7 @@ def start_local_api(
     trigger_store: TriggerStore,
     companion_settings_store: CompanionSettingsStore,
     drawing_store: DrawingStore,
+    screen_analysis_store: ScreenAnalysisStore,
     local_api_token: str,
 ) -> ThreadingHTTPServer:
     app_launcher_cache = AppLauncherCache()
@@ -278,6 +284,171 @@ def start_local_api(
 
         def do_POST(self) -> None:
             if not self.authorize_request():
+                return
+
+            if self.path.startswith("/screen/analyses/"):
+                parts = self.path.strip("/").split("/")
+                if len(parts) != 4 or parts[:2] != ["screen", "analyses"]:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+
+                analysis_id = parts[2]
+                operation = parts[3]
+                data = self.read_json_body()
+                if data is None:
+                    self.send_bad_request("invalid json body")
+                    return
+
+                if operation == "confirm":
+                    if data.get("confirmed") is not True:
+                        self.send_bad_request("explicit confirmation is required")
+                        return
+
+                    try:
+                        action = screen_analysis_store.take_confirmed_click(
+                            analysis_id,
+                        )
+                        pixel_x, pixel_y = click_primary_screen(
+                            action["x"],
+                            action["y"],
+                            expected_foreground_window=action.get(
+                                "foreground_window",
+                            ),
+                        )
+                    except KeyError:
+                        self.send_json(
+                            {"ok": False, "error": "screen analysis expired"},
+                            status=404,
+                        )
+                        return
+                    except TimeoutError:
+                        self.send_json(
+                            {"ok": False, "error": "confirmation expired"},
+                            status=409,
+                        )
+                        return
+                    except ValueError as error:
+                        self.send_json(
+                            {"ok": False, "error": str(error)},
+                            status=409,
+                        )
+                        return
+                    except Exception as error:
+                        emit_event(
+                            "screen.action.failed",
+                            payload={
+                                "analysis_id": analysis_id,
+                                "error": str(error),
+                            },
+                            level="error",
+                        )
+                        self.send_json(
+                            {"ok": False, "error": "screen click failed"},
+                            status=500,
+                        )
+                        return
+
+                    emit_event(
+                        "screen.action.completed",
+                        payload={
+                            "analysis_id": analysis_id,
+                            "label": action["label"],
+                            "pixel_x": pixel_x,
+                            "pixel_y": pixel_y,
+                        },
+                    )
+                    self.send_json({
+                        "ok": True,
+                        "label": action["label"],
+                    })
+                    return
+
+                if operation == "canvas":
+                    if data.get("save") is not True:
+                        self.send_bad_request("explicit save confirmation is required")
+                        return
+
+                    try:
+                        source = screen_analysis_store.get_canvas_source(
+                            analysis_id,
+                        )
+                        created_new_drawing = False
+                        if source.get("drawing_id"):
+                            drawing = drawing_store.get(
+                                source["drawing_id"],
+                                include_image=False,
+                            )
+                        else:
+                            drawing_request, generated = render_annotated_capture(
+                                source["image_data_url"],
+                                source["analysis"],
+                            )
+                            drawing = drawing_store.save(
+                                drawing_request,
+                                generated,
+                            )
+                            screen_analysis_store.mark_canvas_saved(
+                                analysis_id,
+                                drawing["id"],
+                            )
+                            created_new_drawing = True
+                    except KeyError:
+                        self.send_json(
+                            {"ok": False, "error": "screen analysis expired"},
+                            status=404,
+                        )
+                        return
+                    except Exception as error:
+                        emit_event(
+                            "screen.canvas.failed",
+                            payload={
+                                "analysis_id": analysis_id,
+                                "error": str(error),
+                            },
+                            level="error",
+                        )
+                        self.send_json(
+                            {"ok": False, "error": "canvas save failed"},
+                            status=500,
+                        )
+                        return
+
+                    if created_new_drawing:
+                        event_payload = {
+                            key: drawing.get(key)
+                            for key in (
+                                "id",
+                                "title",
+                                "kind",
+                                "story_relevant",
+                                "completion_line",
+                                "created_at",
+                            )
+                        }
+                        emit_event("drawing.created", payload=event_payload)
+                        emit_event(
+                            "screen.canvas.saved",
+                            payload={
+                                "analysis_id": analysis_id,
+                                "drawing_id": drawing.get("id"),
+                            },
+                        )
+                    self.send_json({
+                        "ok": True,
+                        "drawing": drawing,
+                    })
+                    return
+
+                if operation == "dismiss":
+                    screen_analysis_store.dismiss(analysis_id)
+                    emit_event(
+                        "screen.analysis.dismissed",
+                        payload={"analysis_id": analysis_id},
+                    )
+                    self.send_json({"ok": True})
+                    return
+
+                self.send_json({"error": "not found"}, status=404)
                 return
 
             if self.path == "/features/triggers":
@@ -640,6 +811,7 @@ def main() -> None:
     trigger_store = TriggerStore()
     companion_settings_store = CompanionSettingsStore()
     drawing_store = DrawingStore(user_id)
+    screen_analysis_store = ScreenAnalysisStore()
     registry = create_default_registry(trigger_store=trigger_store)
 
     command_router = CommandRouter(
@@ -671,6 +843,7 @@ def main() -> None:
         trigger_store,
         companion_settings_store,
         drawing_store,
+        screen_analysis_store,
         local_api_token,
     )
     ai_followup_waiting = False
@@ -1511,11 +1684,64 @@ def main() -> None:
                                 "height": screenshot.height,
                             },
                         )
-                        answer = neuro.send_screen_message(
+                        screen_result = neuro.send_screen_message(
                             text,
                             screenshot.data_url,
                             capabilities=registry.get_ai_capabilities(),
                         )
+                        answer = screen_result.answer
+                        screen_analysis = screen_analysis_store.create(
+                            screenshot,
+                            {
+                                "answer": screen_result.answer,
+                                "mode": screen_result.mode,
+                                "annotations": screen_result.annotations,
+                                "action": screen_result.action,
+                            },
+                            click_was_requested=is_screen_click_request(text),
+                        )
+                        emit_event(
+                            "screen.analysis.ready",
+                            payload=screen_analysis,
+                        )
+
+                        if is_screen_canvas_request(text):
+                            source = screen_analysis_store.get_canvas_source(
+                                screen_analysis["id"],
+                            )
+                            drawing_request, generated = render_annotated_capture(
+                                source["image_data_url"],
+                                source["analysis"],
+                            )
+                            drawing = drawing_store.save(
+                                drawing_request,
+                                generated,
+                            )
+                            screen_analysis_store.mark_canvas_saved(
+                                screen_analysis["id"],
+                                drawing["id"],
+                            )
+                            emit_event(
+                                "drawing.created",
+                                payload={
+                                    key: drawing.get(key)
+                                    for key in (
+                                        "id",
+                                        "title",
+                                        "kind",
+                                        "story_relevant",
+                                        "completion_line",
+                                        "created_at",
+                                    )
+                                },
+                            )
+                            emit_event(
+                                "screen.canvas.saved",
+                                payload={
+                                    "analysis_id": screen_analysis["id"],
+                                    "drawing_id": drawing.get("id"),
+                                },
+                            )
                     else:
                         message_result = neuro.send_message_result(
                             text,

@@ -118,6 +118,28 @@ class DrawingStoreTests(unittest.TestCase):
                     },
                 )
 
+    def test_keeps_local_screen_analyses_as_a_separate_kind(self) -> None:
+        image_data_url, checksum = make_png_data_url()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = DrawingStore(
+                user_id=1,
+                app_dir=Path(temporary_directory),
+            )
+            saved = store.save(
+                {
+                    "kind": "screen",
+                    "title": "Разбор экрана",
+                    "prompt": "1. Кнопка Продолжить",
+                },
+                {
+                    "image_data_url": image_data_url,
+                    "sha256": checksum,
+                    "model": "ziren-local-screen-annotation",
+                },
+            )
+
+            self.assertEqual(saved["kind"], "screen")
 
 if __name__ == "__main__":
     unittest.main()

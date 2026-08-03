@@ -22,6 +22,14 @@ class NeuroMessageResult:
     drawing_request: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class ScreenMessageResult:
+    answer: str
+    mode: str
+    annotations: list[dict[str, Any]]
+    action: dict[str, Any]
+
+
 class NeuroClient:
     def __init__(
         self,
@@ -178,7 +186,7 @@ class NeuroClient:
         message: str,
         image_data_url: str,
         capabilities: list[dict] | None = None,
-    ) -> str:
+    ) -> ScreenMessageResult:
         with self._chat_lock:
             session_id, delivered_lines = self._get_chat_context()
             data = self._post(
@@ -193,7 +201,26 @@ class NeuroClient:
             )
             self._forget_delivered_lines(delivered_lines)
 
-        return str(data.get("answer", ""))
+        annotations = data.get("annotations")
+        action = data.get("action")
+        return ScreenMessageResult(
+            answer=str(data.get("answer", "")),
+            mode=str(data.get("mode", "explain")),
+            annotations=(
+                annotations
+                if isinstance(annotations, list)
+                else []
+            ),
+            action=(
+                action
+                if isinstance(action, dict)
+                else {
+                    "type": "none",
+                    "risk": "blocked",
+                    "reason": "Действие не предложено.",
+                }
+            ),
+        )
 
     def request_command_reaction(
         self,
