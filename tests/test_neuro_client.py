@@ -71,17 +71,38 @@ class NeuroClientTests(unittest.TestCase):
             )
             return httpx.Response(
                 200,
-                json={"answer": "Вижу окно настроек.", "session_id": 8},
+                json={
+                    "answer": "Вижу окно настроек.",
+                    "session_id": 8,
+                    "mode": "guide",
+                    "annotations": [{
+                        "id": "save",
+                        "label": "Сохранить",
+                        "kind": "target",
+                        "x": 0.7,
+                        "y": 0.8,
+                        "width": 0.2,
+                        "height": 0.1,
+                        "step": 1,
+                    }],
+                    "action": {
+                        "type": "none",
+                        "risk": "blocked",
+                        "reason": "",
+                    },
+                },
             )
 
         client = self.make_client(handler)
 
-        answer = client.send_screen_message(
+        result = client.send_screen_message(
             "что на экране",
             "data:image/jpeg;base64,/9j/",
         )
 
-        self.assertEqual(answer, "Вижу окно настроек.")
+        self.assertEqual(result.answer, "Вижу окно настроек.")
+        self.assertEqual(result.mode, "guide")
+        self.assertEqual(result.annotations[0]["id"], "save")
         self.assertEqual(client.session_id, 8)
 
     def test_returns_a_hidden_drawing_request_separately(self) -> None:

@@ -105,7 +105,7 @@ class DrawingStore:
             20,
         ).lower()
 
-        if kind not in {"sketch", "technical", "story"}:
+        if kind not in {"sketch", "technical", "story", "screen"}:
             kind = "sketch"
 
         metadata = {
