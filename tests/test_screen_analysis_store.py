@@ -89,6 +89,31 @@ class ScreenAnalysisStoreTests(unittest.TestCase):
         self.assertFalse(result["action"]["available"])
         self.assertEqual(result["action"]["risk"], "blocked")
 
+    def test_click_is_blocked_when_windows_did_not_verify_target(self) -> None:
+        result = ScreenAnalysisStore().create(
+            make_capture(),
+            make_plan(),
+            click_was_requested=True,
+            verified_annotation_ids=set(),
+        )
+
+        self.assertFalse(result["action"]["available"])
+        self.assertIn("точные границы", result["action"]["reason"])
+
+    def test_click_is_allowed_for_windows_verified_target(self) -> None:
+        store = ScreenAnalysisStore()
+        result = store.create(
+            make_capture(),
+            make_plan(),
+            click_was_requested=True,
+            verified_annotation_ids={"next"},
+        )
+
+        self.assertTrue(result["action"]["available"])
+        click = store.take_requested_click(result["id"])
+        self.assertAlmostEqual(click["x"], 0.8)
+        self.assertAlmostEqual(click["y"], 0.8)
+
     def test_screenshot_is_not_exposed_in_public_payload(self) -> None:
         store = ScreenAnalysisStore()
         result = store.create(

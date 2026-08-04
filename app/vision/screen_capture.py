@@ -45,6 +45,8 @@ class CapturedScreen:
     height: int
     byte_size: int
     foreground_window: int | None = None
+    source_width: int | None = None
+    source_height: int | None = None
 
 
 def _foreground_window_handle() -> int | None:
@@ -184,6 +186,7 @@ def capture_primary_screen(
         else None
     )
     image = image.convert("RGB")
+    source_width, source_height = image.size
     image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
 
     encoded = b""
@@ -212,4 +215,6 @@ def capture_primary_screen(
         height=image.height,
         byte_size=len(encoded),
         foreground_window=foreground_window,
+        source_width=source_width,
+        source_height=source_height,
     )

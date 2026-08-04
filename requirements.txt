@@ -12,4 +12,5 @@ fastapi
 uvicorn
 pycaw
 comtypes
+uiautomation==2.0.29
 psutil
