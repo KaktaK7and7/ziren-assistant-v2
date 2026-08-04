@@ -168,6 +168,7 @@ class ScreenAnalysisStore:
         capture: CapturedScreen,
         plan: dict[str, Any],
         click_was_requested: bool,
+        verified_annotation_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         now = self._clock()
         analysis_id = uuid4().hex
@@ -213,6 +214,10 @@ class ScreenAnalysisStore:
                 and target.get("width", 1) <= MAX_CLICK_TARGET_WIDTH
                 and target.get("height", 1) <= MAX_CLICK_TARGET_HEIGHT
                 and capture.foreground_window is not None
+                and (
+                    verified_annotation_ids is None
+                    or target_id in verified_annotation_ids
+                )
                 and not risky
             )
 
@@ -225,7 +230,10 @@ class ScreenAnalysisStore:
                     "requested": True,
                     "label": label or target["label"],
                     "risk": "safe",
-                    "reason": reason or "Одно нажатие по явной команде пользователя.",
+                    "reason": (
+                        reason
+                        or "Одно нажатие по явной команде пользователя."
+                    ),
                     "expires_in_seconds": ACTION_TTL_SECONDS,
                 }
                 internal_action = {
@@ -245,10 +253,17 @@ class ScreenAnalysisStore:
                     "risk": "blocked",
                     "reason": (
                         reason
-                        or "Это действие нельзя выполнять автоматически."
+                        or (
+                            "Это действие нельзя выполнять "
+                            "автоматически."
+                        )
                     ),
                 }
             elif click_was_requested and raw_action.get("type") == "click":
+                geometry_verified = (
+                    verified_annotation_ids is None
+                    or target_id in verified_annotation_ids
+                )
                 action = {
                     "type": "none",
                     "available": False,
@@ -256,8 +271,17 @@ class ScreenAnalysisStore:
                     "label": label or target_label,
                     "risk": "blocked",
                     "reason": (
-                        "Не удалось безопасно закрепить действие за активным "
-                        "окном. Покажу цель рамкой, но нажимать не буду."
+                        (
+                            "Windows не подтвердила точные границы "
+                            "элемента. Чтобы не нажать рядом, "
+                            "действие остановлено."
+                        )
+                        if not geometry_verified
+                        else (
+                            "Не удалось безопасно закрепить действие "
+                            "за активным окном. Покажу цель рамкой, "
+                            "но нажимать не буду."
+                        )
                     ),
                 }
 

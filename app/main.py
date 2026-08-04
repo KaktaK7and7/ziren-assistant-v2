@@ -48,6 +48,10 @@ from app.vision.screen_capture import (
 from app.vision.analysis_store import ScreenAnalysisStore
 from app.vision.annotated_capture import render_annotated_capture
 from app.vision.safe_click import click_primary_screen
+from app.vision.ui_grounding import (
+    collect_accessible_ui_elements,
+    ground_screen_annotations,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -62,6 +66,7 @@ AI_WAKE_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 AI_FOLLOWUP_INITIAL_SPEECH_TIMEOUT_SECONDS = 5.0
 COMMAND_REACTION_WAIT_SECONDS = 6.0
 SCREEN_CLICK_FOLLOWUP_SECONDS = 2 * 60
+SCREEN_CAPTURE_OVERLAY_SETTLE_SECONDS = 1.05
 
 AI_WAKE_RESPONSES = [
     "Я здесь.",
@@ -1678,6 +1683,10 @@ def main() -> None:
                     if screen_analysis_requested:
                         add_log("Пользователь запросил анализ экрана")
                         emit_event("screen.capture.requested")
+                        # The desktop overlay is a separate topmost window.
+                        # Give it time to hide before binding the screenshot to
+                        # the foreground application that the user actually sees.
+                        time.sleep(SCREEN_CAPTURE_OVERLAY_SETTLE_SECONDS)
                         screenshot = capture_primary_screen()
                         screenshot_prepared = True
                         add_log(
@@ -1695,6 +1704,16 @@ def main() -> None:
                                 "height": screenshot.height,
                             },
                         )
+                        ui_elements = collect_accessible_ui_elements(screenshot)
+                        add_log(
+                            "Геометрия элементов активного окна считана",
+                            meta={"elements": len(ui_elements)},
+                        )
+                        if not ui_elements:
+                            add_log(
+                                "Windows не вернула доступные элементы окна",
+                                level="warn",
+                            )
                         grounded_screenshot_data_url = (
                             build_grounded_screen_data_url(screenshot)
                         )
@@ -1705,15 +1724,42 @@ def main() -> None:
                         )
                         last_screen_analysis_at = time.time()
                         answer = screen_result.answer
+                        (
+                            grounded_annotations,
+                            verified_annotation_ids,
+                            grounding_matches,
+                        ) = ground_screen_annotations(
+                            screen_result.annotations,
+                            screen_result.action,
+                            ui_elements,
+                        )
+                        if grounding_matches:
+                            add_log(
+                                "Цели экрана привязаны к элементам Windows",
+                                meta={
+                                    "matches": [
+                                        {
+                                            "annotation": (
+                                                match.annotation_label
+                                            ),
+                                            "element": match.element_name,
+                                            "type": match.control_type,
+                                            "score": round(match.score, 1),
+                                        }
+                                        for match in grounding_matches
+                                    ],
+                                },
+                            )
                         screen_analysis = screen_analysis_store.create(
                             screenshot,
                             {
                                 "answer": screen_result.answer,
                                 "mode": screen_result.mode,
-                                "annotations": screen_result.annotations,
+                                "annotations": grounded_annotations,
                                 "action": screen_result.action,
                             },
                             click_was_requested=click_requested,
+                            verified_annotation_ids=verified_annotation_ids,
                         )
 
                         if is_screen_canvas_request(text):
@@ -1812,6 +1858,15 @@ def main() -> None:
                                 level="error",
                             )
                         else:
+                            if (
+                                click_requested
+                                and not screen_analysis["action"].get("available")
+                            ):
+                                answer = (
+                                    "Не нажала: "
+                                    + str(screen_analysis["action"].get("reason"))
+                                )
+                                screen_analysis["answer"] = answer
                             emit_event(
                                 "screen.analysis.ready",
                                 payload=screen_analysis,
