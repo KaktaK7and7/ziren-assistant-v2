@@ -18,6 +18,10 @@ MAX_UI_TREE_DEPTH = 32
 UI_ENUMERATION_TIMEOUT_SECONDS = 4.0
 UI_COLLECTION_WAIT_GRACE_SECONDS = 0.75
 MIN_GROUNDING_CONFIDENCE = 0.78
+MIN_VISUAL_FALLBACK_CONFIDENCE = 0.55
+MAX_VISUAL_FALLBACK_WIDTH = 0.45
+MAX_VISUAL_FALLBACK_HEIGHT = 0.35
+MAX_VISUAL_FALLBACK_AREA = 0.18
 GROUNDABLE_ANNOTATION_KINDS = {"target", "step"}
 INTERACTIVE_CONTROL_TYPES = {
     "ButtonControl",
@@ -137,6 +141,63 @@ def _tokens(value: object) -> set[str]:
         for token in TOKEN_RE.findall(_clean_text(value).casefold())
         if len(token) >= 2
     }
+
+
+def _annotation_confidence(annotation: dict[str, Any]) -> float:
+    value = annotation.get("confidence")
+    if value is not None and not isinstance(value, bool):
+        try:
+            return min(1.0, max(0.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Compatibility with an older gateway that did not include confidence.
+    # A compact box is useful as a visual hint, but it is never considered
+    # verified for clicking without a Windows UI Automation match.
+    try:
+        area = float(annotation.get("width", 1)) * float(
+            annotation.get("height", 1),
+        )
+    except (TypeError, ValueError):
+        return 0.0
+
+    if area <= 0.02:
+        return 0.92
+    if area <= 0.08:
+        return 0.86
+    if area <= 0.18:
+        return 0.74
+    return 0.0
+
+
+def _can_show_visual_fallback(annotation: dict[str, Any]) -> bool:
+    try:
+        x = float(annotation.get("x"))
+        y = float(annotation.get("y"))
+        width = float(annotation.get("width"))
+        height = float(annotation.get("height"))
+    except (TypeError, ValueError):
+        return False
+
+    if (
+        x < 0
+        or y < 0
+        or x > 1
+        or y > 1
+        or width < 0.005
+        or height < 0.005
+        or x + width > 1.001
+        or y + height > 1.001
+        or width > MAX_VISUAL_FALLBACK_WIDTH
+        or height > MAX_VISUAL_FALLBACK_HEIGHT
+        or width * height > MAX_VISUAL_FALLBACK_AREA
+    ):
+        return False
+
+    return (
+        _annotation_confidence(annotation)
+        >= MIN_VISUAL_FALLBACK_CONFIDENCE
+    )
 
 
 def _element_from_pixels(
@@ -470,7 +531,7 @@ def ground_screen_annotations(
     action: object,
     elements: Iterable[UiElement],
 ) -> tuple[list[dict[str, Any]], set[str], list[UiGroundingMatch]]:
-    """Keep model boxes only when Windows confirms their physical bounds."""
+    """Prefer Windows bounds, while preserving safe visual-only hints."""
     if not isinstance(annotations, list):
         return [], set(), []
 
@@ -497,30 +558,36 @@ def ground_screen_annotations(
             query = f"{label} {action_label}".strip()
 
         if kind in GROUNDABLE_ANNOTATION_KINDS:
-            if not query or not element_list:
-                continue
-            match = _best_element(annotation, query, element_list)
+            match = (
+                _best_element(annotation, query, element_list)
+                if query and element_list
+                else None
+            )
             if match is None:
-                # Never expose or click an approximate model-generated target.
-                continue
-
-            element, score, confidence = match
-            annotation.update({
-                "x": element.x,
-                "y": element.y,
-                "width": element.width,
-                "height": element.height,
-            })
-            if annotation_id:
-                verified_ids.add(annotation_id)
-                matches.append(UiGroundingMatch(
-                    annotation_id=annotation_id,
-                    annotation_label=label,
-                    element_name=element.name,
-                    control_type=element.control_type,
-                    score=score,
-                    confidence=confidence,
-                ))
+                # Opera GX and some Chromium windows may expose an incomplete
+                # accessibility tree. A compact, sufficiently confident model
+                # box is still useful for drawing guidance, but its id is not
+                # added to verified_ids, so ScreenAnalysisStore cannot click it.
+                if not _can_show_visual_fallback(annotation):
+                    continue
+            else:
+                element, score, confidence = match
+                annotation.update({
+                    "x": element.x,
+                    "y": element.y,
+                    "width": element.width,
+                    "height": element.height,
+                })
+                if annotation_id:
+                    verified_ids.add(annotation_id)
+                    matches.append(UiGroundingMatch(
+                        annotation_id=annotation_id,
+                        annotation_label=label,
+                        element_name=element.name,
+                        control_type=element.control_type,
+                        score=score,
+                        confidence=confidence,
+                    ))
 
         grounded.append(annotation)
 
