@@ -2,7 +2,12 @@ import unittest
 
 from app.vision.screen_capture import CapturedScreen
 from app.vision.ui_grounding import (
+    MAX_UI_ELEMENTS,
+    MAX_UI_TREE_DEPTH,
+    MIN_GROUNDING_CONFIDENCE,
     UiElement,
+    UiElementBatch,
+    _UiCollectionRequest,
     _collect_ui_elements_on_automation_thread,
     ground_screen_annotations,
 )
@@ -24,6 +29,11 @@ def make_annotation(
 
 
 class UiGroundingTests(unittest.TestCase):
+    def test_browser_walk_uses_deep_limits(self) -> None:
+        self.assertEqual(MAX_UI_ELEMENTS, 5000)
+        self.assertEqual(MAX_UI_TREE_DEPTH, 32)
+        self.assertEqual(MIN_GROUNDING_CONFIDENCE, 0.78)
+
     def test_windows_physical_bounds_use_original_screen_dimensions(self) -> None:
         class Rect:
             left = 1460
@@ -68,6 +78,33 @@ class UiGroundingTests(unittest.TestCase):
         self.assertAlmostEqual(elements[0].y, 122 / 1080)
         self.assertAlmostEqual(elements[0].width, 105 / 1920)
 
+    def test_pending_batch_is_truthy_without_blocking_vision(self) -> None:
+        capture = CapturedScreen(
+            data_url="data:image/jpeg;base64,test",
+            width=1600,
+            height=900,
+            byte_size=4,
+            foreground_window=17,
+        )
+        request = _UiCollectionRequest(capture=capture)
+        batch = UiElementBatch(request)
+
+        self.assertTrue(batch)
+        self.assertEqual(len(batch), 0)
+
+        request.elements = [UiElement(
+            name="Ассистент",
+            control_type="HyperlinkControl",
+            x=0.2,
+            y=0.2,
+            width=0.1,
+            height=0.05,
+        )]
+        request.done.set()
+
+        self.assertEqual(len(list(batch)), 1)
+        self.assertEqual(len(batch), 1)
+
     def test_exact_accessible_name_replaces_model_coordinates(self) -> None:
         annotations, verified, matches = ground_screen_annotations(
             [make_annotation()],
@@ -89,6 +126,10 @@ class UiGroundingTests(unittest.TestCase):
         self.assertEqual(verified, {"profile"})
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].element_name, "Как_так?")
+        self.assertGreaterEqual(
+            matches[0].confidence,
+            MIN_GROUNDING_CONFIDENCE,
+        )
         self.assertAlmostEqual(annotations[0]["x"], 0.76)
         self.assertAlmostEqual(annotations[0]["y"], 0.115)
         self.assertAlmostEqual(annotations[0]["width"], 0.055)
@@ -125,10 +166,9 @@ class UiGroundingTests(unittest.TestCase):
         self.assertEqual(matches[0].control_type, "HyperlinkControl")
         self.assertAlmostEqual(annotations[0]["x"], 0.60)
 
-    def test_unrelated_element_does_not_verify_approximate_box(self) -> None:
-        original = make_annotation()
+    def test_unrelated_element_hides_approximate_target(self) -> None:
         annotations, verified, matches = ground_screen_annotations(
-            [original],
+            [make_annotation()],
             {
                 "type": "click",
                 "target_id": "profile",
@@ -146,8 +186,25 @@ class UiGroundingTests(unittest.TestCase):
 
         self.assertEqual(verified, set())
         self.assertEqual(matches, [])
-        self.assertEqual(annotations[0]["x"], original["x"])
-        self.assertEqual(annotations[0]["y"], original["y"])
+        self.assertEqual(annotations, [])
+
+    def test_weak_partial_match_below_threshold_is_hidden(self) -> None:
+        annotations, verified, matches = ground_screen_annotations(
+            [make_annotation("Профиль пользователя")],
+            {},
+            [UiElement(
+                name="Профили разработчиков и новости",
+                control_type="TextControl",
+                x=0.2,
+                y=0.2,
+                width=0.3,
+                height=0.08,
+            )],
+        )
+
+        self.assertEqual(annotations, [])
+        self.assertEqual(verified, set())
+        self.assertEqual(matches, [])
 
     def test_non_target_annotations_are_not_repositioned(self) -> None:
         annotation = make_annotation("Важный текст")
