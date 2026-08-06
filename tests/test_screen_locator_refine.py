@@ -16,7 +16,7 @@ from app.api.neuro_client import (
 )
 
 
-# Regression values below come from the Windows Opera GX smoke-test.
+# Regression values below reproduce the exact Windows Opera GX smoke-test.
 def jpeg_data_url(width: int = 1000, height: int = 700) -> str:
     image = Image.new("RGB", (width, height), (20, 30, 40))
     buffer = io.BytesIO()
