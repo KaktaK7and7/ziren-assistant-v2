@@ -7,15 +7,21 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from app.vision.screen_capture import CapturedScreen
 from app.vision.windows_geometry import enable_per_monitor_dpi_awareness
 
 
-MAX_UI_ELEMENTS = 700
-MAX_UI_TREE_DEPTH = 14
-UI_ENUMERATION_TIMEOUT_SECONDS = 1.6
+MAX_UI_ELEMENTS = 5000
+MAX_UI_TREE_DEPTH = 32
+UI_ENUMERATION_TIMEOUT_SECONDS = 4.0
+UI_COLLECTION_WAIT_GRACE_SECONDS = 0.75
+MIN_GROUNDING_CONFIDENCE = 0.78
+MIN_VISUAL_FALLBACK_CONFIDENCE = 0.55
+MAX_VISUAL_FALLBACK_WIDTH = 0.45
+MAX_VISUAL_FALLBACK_HEIGHT = 0.35
+MAX_VISUAL_FALLBACK_AREA = 0.18
 GROUNDABLE_ANNOTATION_KINDS = {"target", "step"}
 INTERACTIVE_CONTROL_TYPES = {
     "ButtonControl",
@@ -59,6 +65,7 @@ class UiGroundingMatch:
     element_name: str
     control_type: str
     score: float
+    confidence: float
 
 
 @dataclass
@@ -66,6 +73,52 @@ class _UiCollectionRequest:
     capture: CapturedScreen
     done: threading.Event = field(default_factory=threading.Event)
     elements: list[UiElement] = field(default_factory=list)
+    visited: int = 0
+    truncated: bool = False
+
+
+class UiElementBatch(Iterable[UiElement]):
+    """Lazy UIA result that lets vision and Windows enumeration overlap."""
+
+    def __init__(self, request: _UiCollectionRequest) -> None:
+        self._request = request
+        self._resolved: list[UiElement] | None = None
+        self._resolve_lock = threading.Lock()
+
+    def resolve(self) -> list[UiElement]:
+        with self._resolve_lock:
+            if self._resolved is not None:
+                return list(self._resolved)
+
+            self._request.done.wait(
+                UI_ENUMERATION_TIMEOUT_SECONDS
+                + UI_COLLECTION_WAIT_GRACE_SECONDS,
+            )
+            self._resolved = list(self._request.elements)
+            return list(self._resolved)
+
+    def __iter__(self) -> Iterator[UiElement]:
+        return iter(self.resolve())
+
+    def __len__(self) -> int:
+        if self._resolved is not None:
+            return len(self._resolved)
+        if self._request.done.is_set():
+            self._resolved = list(self._request.elements)
+            return len(self._resolved)
+        # The exact count is logged by the UIA worker when it finishes. Do not
+        # block here: main.py calls len() before sending the vision request.
+        return 0
+
+    def __bool__(self) -> bool:
+        if self._resolved is not None:
+            return bool(self._resolved)
+        if self._request.done.is_set():
+            self._resolved = list(self._request.elements)
+            return bool(self._resolved)
+        # Pending is not the same as empty. This avoids a false warning while
+        # the AI request and the UIA walk are running in parallel.
+        return True
 
 
 _ui_requests: queue.Queue[_UiCollectionRequest] = queue.Queue()
@@ -88,6 +141,63 @@ def _tokens(value: object) -> set[str]:
         for token in TOKEN_RE.findall(_clean_text(value).casefold())
         if len(token) >= 2
     }
+
+
+def _annotation_confidence(annotation: dict[str, Any]) -> float:
+    value = annotation.get("confidence")
+    if value is not None and not isinstance(value, bool):
+        try:
+            return min(1.0, max(0.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Compatibility with an older gateway that did not include confidence.
+    # A compact box is useful as a visual hint, but it is never considered
+    # verified for clicking without a Windows UI Automation match.
+    try:
+        area = float(annotation.get("width", 1)) * float(
+            annotation.get("height", 1),
+        )
+    except (TypeError, ValueError):
+        return 0.0
+
+    if area <= 0.02:
+        return 0.92
+    if area <= 0.08:
+        return 0.86
+    if area <= 0.18:
+        return 0.74
+    return 0.0
+
+
+def _can_show_visual_fallback(annotation: dict[str, Any]) -> bool:
+    try:
+        x = float(annotation.get("x"))
+        y = float(annotation.get("y"))
+        width = float(annotation.get("width"))
+        height = float(annotation.get("height"))
+    except (TypeError, ValueError):
+        return False
+
+    if (
+        x < 0
+        or y < 0
+        or x > 1
+        or y > 1
+        or width < 0.005
+        or height < 0.005
+        or x + width > 1.001
+        or y + height > 1.001
+        or width > MAX_VISUAL_FALLBACK_WIDTH
+        or height > MAX_VISUAL_FALLBACK_HEIGHT
+        or width * height > MAX_VISUAL_FALLBACK_AREA
+    ):
+        return False
+
+    return (
+        _annotation_confidence(annotation)
+        >= MIN_VISUAL_FALLBACK_CONFIDENCE
+    )
 
 
 def _element_from_pixels(
@@ -127,10 +237,10 @@ def _element_from_pixels(
     )
 
 
-def _collect_ui_elements_on_automation_thread(
+def _collect_ui_elements_with_diagnostics(
     capture: CapturedScreen,
     automation: Any,
-) -> list[UiElement]:
+) -> tuple[list[UiElement], int, bool]:
     screen_width = int(capture.source_width or capture.width)
     screen_height = int(capture.source_height or capture.height)
     deadline = time.monotonic() + UI_ENUMERATION_TIMEOUT_SECONDS
@@ -139,7 +249,7 @@ def _collect_ui_elements_on_automation_thread(
 
     root = automation.ControlFromHandle(int(capture.foreground_window or 0))
     if root is None:
-        return []
+        return [], 0, False
 
     controls: deque[tuple[Any, int]] = deque([(root, 0)])
     visited = 0
@@ -202,6 +312,25 @@ def _collect_ui_elements_on_automation_thread(
         for child in children:
             controls.append((child, depth + 1))
 
+    truncated = bool(
+        controls
+        and (
+            visited >= MAX_UI_ELEMENTS
+            or time.monotonic() >= deadline
+        )
+    )
+    return elements, visited, truncated
+
+
+def _collect_ui_elements_on_automation_thread(
+    capture: CapturedScreen,
+    automation: Any,
+) -> list[UiElement]:
+    """Compatibility helper kept for focused unit tests."""
+    elements, _, _ = _collect_ui_elements_with_diagnostics(
+        capture,
+        automation,
+    )
     return elements
 
 
@@ -217,14 +346,36 @@ def _run_ui_worker() -> None:
 
                 automation = automation_module
                 initializer = automation.UIAutomationInitializerInThread()
-            request.elements = _collect_ui_elements_on_automation_thread(
+            (
+                request.elements,
+                request.visited,
+                request.truncated,
+            ) = _collect_ui_elements_with_diagnostics(
                 request.capture,
                 automation,
             )
         except Exception:
             request.elements = []
+            request.visited = 0
+            request.truncated = False
         finally:
             request.done.set()
+
+        try:
+            from app.core.log_bus import add_log
+
+            add_log(
+                "Windows UI Automation завершила обход",
+                meta={
+                    "elements": len(request.elements),
+                    "visited": request.visited,
+                    "max_elements": MAX_UI_ELEMENTS,
+                    "max_depth": MAX_UI_TREE_DEPTH,
+                    "truncated": request.truncated,
+                },
+            )
+        except Exception:
+            pass
 
         # Keep the initializer referenced for the whole lifetime of this
         # dedicated thread. UI Automation COM objects must never be reused on
@@ -248,8 +399,8 @@ def _ensure_ui_worker() -> None:
 
 def collect_accessible_ui_elements(
     capture: CapturedScreen,
-) -> list[UiElement]:
-    """Read physical UI bounds from the analyzed Windows foreground window."""
+) -> UiElementBatch | list[UiElement]:
+    """Begin reading physical UI bounds from the foreground window."""
     if os.name != "nt" or capture.foreground_window is None:
         return []
 
@@ -257,54 +408,73 @@ def collect_accessible_ui_elements(
     _ensure_ui_worker()
     request = _UiCollectionRequest(capture=capture)
     _ui_requests.put(request)
-    if not request.done.wait(UI_ENUMERATION_TIMEOUT_SECONDS + 0.65):
-        return []
-    return list(request.elements)
+    return UiElementBatch(request)
 
 
-def _lexical_score(query: str, element: UiElement) -> float | None:
+def _token_matches(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if len(left) < 4 or len(right) < 4:
+        return False
+    return left.startswith(right) or right.startswith(left)
+
+
+def _lexical_score(query: str, element: UiElement) -> tuple[float, float] | None:
     query_normalized = _normalized_text(query)
     query_tokens = _tokens(query)
     if not query_normalized or not query_tokens:
         return None
 
-    best = 0.0
+    best: tuple[float, float] | None = None
     for value in (element.name, element.automation_id):
         candidate_normalized = _normalized_text(value)
         candidate_tokens = _tokens(value)
         if not candidate_normalized or not candidate_tokens:
             continue
 
-        score = 0.0
         if candidate_normalized == query_normalized:
-            score = 220.0
+            result = (220.0, 1.0)
         elif candidate_normalized in query_normalized:
-            score = 160.0 + min(30.0, len(candidate_normalized) * 1.5)
+            result = (
+                160.0 + min(30.0, len(candidate_normalized) * 1.5),
+                0.98,
+            )
         elif query_normalized in candidate_normalized:
-            score = 135.0 + min(25.0, len(query_normalized))
+            result = (
+                135.0 + min(25.0, len(query_normalized)),
+                0.92,
+            )
         else:
+            exact_matches = 0
+            prefix_matches = 0
             for candidate_token in candidate_tokens:
                 if candidate_token in query_tokens:
-                    score += 38.0
-                    continue
-                if len(candidate_token) >= 4 and any(
-                    token.startswith(candidate_token)
-                    or candidate_token.startswith(token)
-                    for token in query_tokens
-                    if len(token) >= 4
+                    exact_matches += 1
+                elif any(
+                    _token_matches(candidate_token, query_token)
+                    for query_token in query_tokens
                 ):
-                    score += 24.0
+                    prefix_matches += 1
 
-        best = max(best, score)
+            weighted_matches = exact_matches + prefix_matches * 0.75
+            coverage = weighted_matches / max(1, len(candidate_tokens))
+            confidence = min(0.89, coverage * 0.89)
+            score = exact_matches * 38.0 + prefix_matches * 24.0
+            result = (score, confidence)
 
-    return best if best > 0 else None
+        if best is None or result[0] > best[0]:
+            best = result
+
+    if best is None or best[0] <= 0:
+        return None
+    return best
 
 
 def _best_element(
     annotation: dict[str, Any],
     query: str,
     elements: Iterable[UiElement],
-) -> tuple[UiElement, float] | None:
+) -> tuple[UiElement, float, float] | None:
     try:
         original_center = (
             float(annotation.get("x", 0))
@@ -315,10 +485,13 @@ def _best_element(
     except (TypeError, ValueError):
         original_center = (0.5, 0.5)
 
-    ranked: list[tuple[float, UiElement]] = []
+    ranked: list[tuple[float, float, UiElement]] = []
     for element in elements:
         lexical = _lexical_score(query, element)
         if lexical is None:
+            continue
+        lexical_score, confidence = lexical
+        if confidence < MIN_GROUNDING_CONFIDENCE:
             continue
 
         center_x, center_y = element.center
@@ -337,17 +510,20 @@ def _best_element(
             if area > 0.35
             else max(0.0, area - 0.08) * 80
         )
-        score = lexical + interactive_bonus - distance * 22 - oversized_penalty
-        ranked.append((score, element))
+        score = (
+            lexical_score
+            + interactive_bonus
+            - distance * 22
+            - oversized_penalty
+        )
+        ranked.append((score, confidence, element))
 
     if not ranked:
         return None
 
     ranked.sort(key=lambda item: item[0], reverse=True)
-    score, element = ranked[0]
-    if score < 24:
-        return None
-    return element, score
+    score, confidence, element = ranked[0]
+    return element, score, confidence
 
 
 def ground_screen_annotations(
@@ -355,7 +531,7 @@ def ground_screen_annotations(
     action: object,
     elements: Iterable[UiElement],
 ) -> tuple[list[dict[str, Any]], set[str], list[UiGroundingMatch]]:
-    """Replace model-estimated boxes with verified physical UI rectangles."""
+    """Prefer Windows bounds, while preserving safe visual-only hints."""
     if not isinstance(annotations, list):
         return [], set(), []
 
@@ -381,10 +557,21 @@ def ground_screen_annotations(
         if annotation_id and annotation_id == target_id:
             query = f"{label} {action_label}".strip()
 
-        if kind in GROUNDABLE_ANNOTATION_KINDS and query and element_list:
-            match = _best_element(annotation, query, element_list)
-            if match is not None:
-                element, score = match
+        if kind in GROUNDABLE_ANNOTATION_KINDS:
+            match = (
+                _best_element(annotation, query, element_list)
+                if query and element_list
+                else None
+            )
+            if match is None:
+                # Opera GX and some Chromium windows may expose an incomplete
+                # accessibility tree. A compact, sufficiently confident model
+                # box is still useful for drawing guidance, but its id is not
+                # added to verified_ids, so ScreenAnalysisStore cannot click it.
+                if not _can_show_visual_fallback(annotation):
+                    continue
+            else:
+                element, score, confidence = match
                 annotation.update({
                     "x": element.x,
                     "y": element.y,
@@ -399,6 +586,7 @@ def ground_screen_annotations(
                         element_name=element.name,
                         control_type=element.control_type,
                         score=score,
+                        confidence=confidence,
                     ))
 
         grounded.append(annotation)
