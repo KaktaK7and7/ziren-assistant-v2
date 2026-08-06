@@ -1,5 +1,6 @@
 import base64
 import io
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -15,8 +16,28 @@ from app.config.settings import AUTH_SITE_URL, DESKTOP_TOKEN_ENV, get_desktop_to
 
 
 MIN_SCREEN_ANNOTATION_CONFIDENCE = 0.78
+MAX_VISUAL_TARGET_WIDTH = 0.4
+MAX_VISUAL_TARGET_HEIGHT = 0.3
 SCREEN_CROP_PREFIX = "data:image/jpeg;base64,"
 MAX_SCREEN_CROP_BYTES = 1_200_000
+TARGET_TOKEN_RE = re.compile(r"[0-9a-zа-яё_]+", re.IGNORECASE)
+IGNORED_TARGET_TOKENS = {
+    "кнопка",
+    "кнопку",
+    "вкладка",
+    "вкладку",
+    "пункт",
+    "пункта",
+    "меню",
+    "ссылка",
+    "ссылку",
+    "иконка",
+    "иконку",
+    "элемент",
+    "элемента",
+    "экран",
+    "экране",
+}
 
 
 class NeuroAuthenticationError(RuntimeError):
@@ -45,6 +66,11 @@ class _ScreenCropTransform:
     height: float
 
 
+def _clean_text(value: object, limit: int = 180) -> str:
+    safe = re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))
+    return " ".join(safe.split())[:limit].strip()
+
+
 def _annotation_confidence(annotation: object) -> float:
     if not isinstance(annotation, dict):
         return 0.0
@@ -56,6 +82,43 @@ def _annotation_confidence(annotation: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return min(1.0, max(0.0, confidence))
+
+
+def _target_tokens(value: object) -> set[str]:
+    return {
+        token
+        for token in TARGET_TOKEN_RE.findall(_clean_text(value).casefold())
+        if len(token) >= 3 and token not in IGNORED_TARGET_TOKENS
+    }
+
+
+def _tokens_match(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    prefix_length = min(6, len(left), len(right))
+    return (
+        prefix_length >= 4
+        and (
+            left[:prefix_length] == right[:prefix_length]
+            or left in right
+            or right in left
+        )
+    )
+
+
+def _annotation_label_matches(
+    expected_label: object,
+    candidate_label: object,
+) -> bool:
+    expected = _target_tokens(expected_label)
+    candidate = _target_tokens(candidate_label)
+    if not expected or not candidate:
+        return False
+    return any(
+        _tokens_match(left, right)
+        for left in expected
+        for right in candidate
+    )
 
 
 def _valid_annotation_box(annotation: object) -> tuple[float, float, float, float] | None:
@@ -123,12 +186,8 @@ def _select_retry_annotation(data: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _needs_enlarged_crop(data: dict[str, Any]) -> bool:
-    candidate = _select_retry_annotation(data)
-    return bool(
-        candidate is not None
-        and _annotation_confidence(candidate)
-        < MIN_SCREEN_ANNOTATION_CONFIDENCE
-    )
+    """Every visual target needs a second, zoomed localization pass."""
+    return _select_retry_annotation(data) is not None
 
 
 def _build_enlarged_screen_crop(
@@ -155,8 +214,10 @@ def _build_enlarged_screen_crop(
     x, y, width, height = box
     center_x = x + width / 2
     center_y = y + height / 2
-    crop_width = min(0.82, max(0.34, width * 3.2))
-    crop_height = min(0.82, max(0.34, height * 3.2))
+    # A model can be confidently wrong by 10–20% of the screen. Keep the
+    # verification crop deliberately broad and inspect the whole fragment.
+    crop_width = min(0.92, max(0.60, width * 6.0))
+    crop_height = min(0.82, max(0.50, height * 6.0))
     left = min(1 - crop_width, max(0.0, center_x - crop_width / 2))
     top = min(1 - crop_height, max(0.0, center_y - crop_height / 2))
 
@@ -232,6 +293,98 @@ def _remap_crop_annotations(
     result = dict(data)
     result["annotations"] = remapped
     return result
+
+
+def _merge_refined_annotation(
+    original: dict[str, Any],
+    refined: object,
+) -> dict[str, Any] | None:
+    original_box = _valid_annotation_box(original)
+    refined_box = _valid_annotation_box(refined)
+    if (
+        original_box is None
+        or refined_box is None
+        or not isinstance(refined, dict)
+        or _annotation_confidence(refined)
+        < MIN_SCREEN_ANNOTATION_CONFIDENCE
+        or not _annotation_label_matches(
+            original.get("label"),
+            refined.get("label"),
+        )
+    ):
+        return None
+
+    x, y, width, height = refined_box
+    if (
+        width > MAX_VISUAL_TARGET_WIDTH
+        or height > MAX_VISUAL_TARGET_HEIGHT
+    ):
+        return None
+
+    result = dict(original)
+    result.update({
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "confidence": _annotation_confidence(refined),
+        "_visual_refined": True,
+    })
+    return result
+
+
+def _replace_annotation(
+    data: dict[str, Any],
+    original: dict[str, Any],
+    refined: dict[str, Any],
+) -> dict[str, Any]:
+    original_id = _clean_text(original.get("id"), 40)
+    annotations = data.get("annotations")
+    if not isinstance(annotations, list):
+        return data
+
+    replaced: list[dict[str, Any]] = []
+    for item in annotations:
+        if (
+            isinstance(item, dict)
+            and _clean_text(item.get("id"), 40) == original_id
+        ):
+            replaced.append(refined)
+        elif isinstance(item, dict):
+            replaced.append(dict(item))
+
+    result = dict(data)
+    result["annotations"] = replaced
+    return result
+
+
+def _mark_unverified_targets(data: dict[str, Any]) -> dict[str, Any]:
+    """Prevent a first-pass model box from becoming a visual fallback."""
+    annotations = data.get("annotations")
+    if not isinstance(annotations, list):
+        return data
+
+    normalized: list[dict[str, Any]] = []
+    for raw in annotations:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        if str(item.get("kind") or "").lower() in {"target", "step"}:
+            item["confidence"] = 0.0
+            item.pop("_visual_refined", None)
+        normalized.append(item)
+
+    result = dict(data)
+    result["annotations"] = normalized
+    return result
+
+
+def _target_status_answer(annotation: dict[str, Any]) -> str:
+    label = _clean_text(annotation.get("label"), 100) or "цели"
+    return (
+        f"Проверила расположение «{label}». "
+        "На экране отображается только подтверждённая рамка."
+    )
 
 
 def _screen_result_from_data(data: dict[str, Any]) -> ScreenMessageResult:
@@ -433,6 +586,12 @@ class NeuroClient:
                 if _needs_enlarged_crop(data)
                 else None
             )
+            if retry_annotation is not None:
+                # The first box is only a crop hint. It must never reach the
+                # overlay before the zoomed pass confirms it.
+                data = _mark_unverified_targets(data)
+                data["answer"] = _target_status_answer(retry_annotation)
+
             crop_result = (
                 _build_enlarged_screen_crop(
                     image_data_url,
@@ -441,7 +600,7 @@ class NeuroClient:
                 if retry_annotation is not None
                 else None
             )
-            if crop_result is not None:
+            if crop_result is not None and retry_annotation is not None:
                 crop_data_url, transform = crop_result
                 retry_data = self._post(
                     "/api/assistant/vision",
@@ -450,8 +609,14 @@ class NeuroClient:
                             f"{message}\n\n"
                             "Служебное уточнение: это увеличенный фрагмент "
                             "предыдущего снимка вокруг вероятной цели. "
-                            "Игнорируй старые линии сетки и верни плотную "
-                            "рамку относительно границ этого фрагмента."
+                            f"Ищи только реально видимый элемент «"
+                            f"{_clean_text(retry_annotation.get('label'), 100)}"
+                            "». Первая рамка недоверенная: не используй её "
+                            "координаты и не предполагай, что цель находится "
+                            "в центре. Осмотри весь фрагмент, включая края. "
+                            "Верни ровно одну плотную рамку target/step только "
+                            "если видишь совпадающий текст или значок. Если "
+                            "цели нет — верни пустой annotations."
                         ),
                         "image_data_url": crop_data_url,
                         "session_id": self._get_session_id(),
@@ -464,12 +629,16 @@ class NeuroClient:
                     transform,
                 )
                 retry_candidate = _select_retry_annotation(retry_data)
-                if (
-                    retry_candidate is not None
-                    and _annotation_confidence(retry_candidate)
-                    >= _annotation_confidence(retry_annotation)
-                ):
-                    data = retry_data
+                refined = _merge_refined_annotation(
+                    retry_annotation,
+                    retry_candidate,
+                )
+                if refined is not None:
+                    data = _replace_annotation(
+                        data,
+                        retry_annotation,
+                        refined,
+                    )
 
         return _screen_result_from_data(data)
 
