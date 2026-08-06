@@ -6,6 +6,7 @@ from PIL import Image
 
 from app.api.neuro_client import (
     MIN_SCREEN_ANNOTATION_CONFIDENCE,
+    _answer_claims_unverified_location,
     _build_enlarged_screen_crop,
     _mark_unverified_targets,
     _merge_refined_annotation,
@@ -50,6 +51,19 @@ def screen_data(confidence: float) -> dict:
 
 
 class ScreenLocatorRefineTests(unittest.TestCase):
+    def test_only_unverified_location_claims_are_rewritten(self) -> None:
+        self.assertFalse(
+            _answer_claims_unverified_location("Вижу окно настроек."),
+        )
+        self.assertTrue(
+            _answer_claims_unverified_location(
+                "Кнопка примерно в 0.8 от ширины экрана.",
+            ),
+        )
+        self.assertTrue(
+            _answer_claims_unverified_location("Я обвела кнопку рамкой."),
+        )
+
     def test_every_target_requests_zoomed_verification(self) -> None:
         self.assertTrue(_needs_enlarged_crop(screen_data(0.25)))
         self.assertTrue(_needs_enlarged_crop(screen_data(0.99)))

@@ -379,6 +379,29 @@ def _mark_unverified_targets(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _answer_claims_unverified_location(value: object) -> bool:
+    normalized = _clean_text(value, 5000).casefold()
+    if not normalized:
+        return False
+    coordinate_claim = bool(
+        re.search(r"\b0[.,]\d+\b", normalized)
+        or "от ширины" in normalized
+        or "от высоты" in normalized
+    )
+    visual_claim = any(
+        marker in normalized
+        for marker in (
+            "обвел",
+            "обвёл",
+            "выделил",
+            "подсветил",
+            "показал рамк",
+            "показываю рамк",
+        )
+    )
+    return coordinate_claim or visual_claim
+
+
 def _target_status_answer(annotation: dict[str, Any]) -> str:
     label = _clean_text(annotation.get("label"), 100) or "цели"
     return (
@@ -590,7 +613,8 @@ class NeuroClient:
                 # The first box is only a crop hint. It must never reach the
                 # overlay before the zoomed pass confirms it.
                 data = _mark_unverified_targets(data)
-                data["answer"] = _target_status_answer(retry_annotation)
+                if _answer_claims_unverified_location(data.get("answer")):
+                    data["answer"] = _target_status_answer(retry_annotation)
 
             crop_result = (
                 _build_enlarged_screen_crop(
