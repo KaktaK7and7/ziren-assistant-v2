@@ -13,6 +13,10 @@ from app.api.desktop_auth import (
     normalize_desktop_token,
 )
 from app.config.settings import AUTH_SITE_URL, DESKTOP_TOKEN_ENV, get_desktop_token
+from app.vision.browser_bridge import (
+    browser_bridge_screen_result,
+    ensure_browser_bridge,
+)
 
 
 MIN_SCREEN_ANNOTATION_CONFIDENCE = 0.78
@@ -456,6 +460,7 @@ class NeuroClient:
             base_url=AUTH_SITE_URL,
             timeout=30.0,
         )
+        self.browser_bridge = ensure_browser_bridge()
         self._session_lock = threading.Lock()
         self._chat_lock = threading.Lock()
         self._drawing_lock = threading.Lock()
@@ -590,6 +595,10 @@ class NeuroClient:
         image_data_url: str,
         capabilities: list[dict] | None = None,
     ) -> ScreenMessageResult:
+        browser_result = browser_bridge_screen_result(message)
+        if browser_result is not None:
+            return _screen_result_from_data(browser_result)
+
         with self._chat_lock:
             session_id, delivered_lines = self._get_chat_context()
             data = self._post(
