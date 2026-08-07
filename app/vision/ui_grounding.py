@@ -532,7 +532,7 @@ def ground_screen_annotations(
     elements: Iterable[UiElement],
 ) -> tuple[list[dict[str, Any]], set[str], list[UiGroundingMatch]]:
     """Prefer Windows bounds, while preserving safe visual-only hints."""
-    if not isinstance(annotations, list):
+    if not isinstance(annotations, list) or not annotations:
         return [], set(), []
 
     element_list = list(elements)
