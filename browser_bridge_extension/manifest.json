@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Ziren Browser Bridge",
+  "version": "0.1.0",
+  "description": "Передаёт Ziren реальные DOM-элементы страницы и подсвечивает выбранную цель без угадывания координат нейросетью.",
+  "permissions": ["tabs"],
+  "host_permissions": [
+    "http://127.0.0.1:8788/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Ziren Browser Bridge"
+  }
+}
