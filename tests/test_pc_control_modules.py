@@ -2,6 +2,7 @@ import unittest
 
 from app.modules.system.browser_control_module import SystemBrowserControlModule
 from app.modules.system.clipboard_module import SystemClipboardModule
+from app.modules.system.file_navigation_module import SystemFileNavigationModule
 from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
 from app.modules.system.text_input_module import SystemTextInputModule
@@ -36,6 +37,14 @@ class PcControlRoutingTests(unittest.TestCase):
         module = SystemScreenshotModule()
         self.assertTrue(module.can_handle("сделай скриншот"))
         self.assertFalse(module.can_handle("сделай скриншот и отправь диане"))
+
+    def test_file_navigation_claims_known_folders_before_app_launcher(self) -> None:
+        module = SystemFileNavigationModule()
+        self.assertTrue(module.can_handle("открой загрузки"))
+        self.assertTrue(module.can_handle("открой проводник"))
+        self.assertTrue(module.can_handle("покажи последний скачанный файл"))
+        self.assertTrue(module.can_handle("открой последний скачанный файл"))
+        self.assertFalse(module.can_handle("открой дискорд"))
 
 
 if __name__ == "__main__":
