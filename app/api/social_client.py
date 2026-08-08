@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 import threading
 import time
@@ -19,6 +20,8 @@ from app.config.settings import AUTH_SITE_URL, DESKTOP_TOKEN_ENV, get_desktop_to
 
 FRIEND_CACHE_SECONDS = 15.0
 MAX_OUTGOING_MESSAGE_LENGTH = 4_000
+MAX_SCREENSHOT_BYTES = 1_250_000
+SCREENSHOT_DATA_URL_PREFIX = "data:image/jpeg;base64,"
 NAME_TOKEN_RE = re.compile(r"[0-9a-zа-яё_-]+", re.IGNORECASE)
 
 
@@ -220,24 +223,7 @@ class SocialClient:
         self._friend_cache_at = 0.0
         self._lock = threading.Lock()
 
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        payload: dict[str, Any] | None = None,
-        timeout: float | None = None,
-    ) -> dict[str, Any]:
-        options: dict[str, Any] = {
-            "headers": self.authorization_headers,
-        }
-        if payload is not None:
-            options["json"] = payload
-        if timeout is not None:
-            options["timeout"] = timeout
-
-        response = self.client.request(method, path, **options)
-
+    def _parse_response(self, response: httpx.Response) -> dict[str, Any]:
         if response.status_code in (401, 403):
             raise SocialAuthenticationError(
                 "Desktop session is no longer authorized"
@@ -257,6 +243,25 @@ class SocialClient:
             )
 
         return data if isinstance(data, dict) else {}
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "headers": self.authorization_headers,
+        }
+        if payload is not None:
+            options["json"] = payload
+        if timeout is not None:
+            options["timeout"] = timeout
+
+        response = self.client.request(method, path, **options)
+        return self._parse_response(response)
 
     def list_friends(self, force: bool = False) -> list[SocialFriend]:
         with self._lock:
@@ -337,17 +342,37 @@ class SocialClient:
         image_data_url: str,
         body: str = "",
     ) -> SocialMessage:
-        data = self._request(
-            "POST",
-            "/api/social/messages",
-            payload={
-                "recipient_id": friend.id,
-                "kind": "screenshot",
-                "body": str(body or "").strip()[:MAX_OUTGOING_MESSAGE_LENGTH],
-                "image_data_url": image_data_url,
-            },
+        if body.strip():
+            raise SocialApiError("Подпись к голосовому скриншоту пока не поддерживается")
+
+        if not image_data_url.startswith(SCREENSHOT_DATA_URL_PREFIX):
+            raise SocialApiError("Некорректный снимок экрана")
+
+        encoded = image_data_url[len(SCREENSHOT_DATA_URL_PREFIX):]
+
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+        except Exception as error:
+            raise SocialApiError("Некорректный снимок экрана") from error
+
+        if (
+            len(image_bytes) < 4
+            or len(image_bytes) > MAX_SCREENSHOT_BYTES
+            or image_bytes[:3] != b"\xff\xd8\xff"
+        ):
+            raise SocialApiError("Некорректный снимок экрана")
+
+        headers = {
+            **self.authorization_headers,
+            "Content-Type": "image/jpeg",
+        }
+        response = self.client.post(
+            f"/api/social/screenshots?recipient_id={friend.id}",
+            headers=headers,
+            content=image_bytes,
             timeout=45.0,
         )
+        data = self._parse_response(response)
         return self._message_from_payload(data.get("message"))
 
     def get_announcements(self) -> list[SocialMessage]:
