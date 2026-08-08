@@ -5,25 +5,62 @@ import subprocess
 from pathlib import Path
 
 
-BLOCKED_OPEN_EXTENSIONS = {
-    ".bat",
-    ".cmd",
-    ".com",
-    ".cpl",
-    ".exe",
-    ".hta",
-    ".js",
-    ".jse",
-    ".lnk",
-    ".msi",
-    ".msp",
-    ".ps1",
-    ".reg",
-    ".scr",
-    ".vbe",
-    ".vbs",
-    ".wsf",
-    ".wsh",
+SAFE_OPEN_EXTENSIONS = {
+    # Documents and plain data.
+    ".csv",
+    ".doc",
+    ".docx",
+    ".epub",
+    ".json",
+    ".log",
+    ".md",
+    ".ods",
+    ".odt",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".rtf",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".xml",
+    # Images.
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".webp",
+    # Audio and video.
+    ".aac",
+    ".avi",
+    ".flac",
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+    # Archives are opened by the user's configured archive application.
+    ".7z",
+    ".rar",
+    ".tar",
+    ".zip",
+    # Common creative / CAD / 3D project files.
+    ".3ds",
+    ".blend",
+    ".dxf",
+    ".fbx",
+    ".obj",
+    ".psd",
+    ".stl",
 }
 
 PARTIAL_DOWNLOAD_EXTENSIONS = {
@@ -122,16 +159,20 @@ def reveal_file(path: Path) -> None:
     )
 
 
+def is_safe_to_open(path: Path) -> bool:
+    return path.suffix.lower() in SAFE_OPEN_EXTENSIONS
+
+
 def open_safe_file(path: Path) -> None:
     _require_windows()
 
     if not path.exists() or not path.is_file():
         raise FileNavigationError("Файл больше не существует")
 
-    if path.suffix.lower() in BLOCKED_OPEN_EXTENSIONS:
+    if not is_safe_to_open(path):
         raise FileNavigationError(
-            "Последний файл может запускать программу или системную команду. "
-            "Я могу показать его в папке, но не буду запускать голосом."
+            "Я не запускаю этот тип скачанного файла голосом. "
+            "Могу показать его в Проводнике, чтобы решение осталось за тобой."
         )
 
     os.startfile(str(path))  # type: ignore[attr-defined]
