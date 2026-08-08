@@ -1,7 +1,17 @@
+import os
+
+from app.config.settings import DESKTOP_TOKEN_ENV
 from app.modules.base import AssistantModule
 from app.modules.system.app_launcher_module import SystemAppLauncherModule
+from app.modules.system.browser_control_module import SystemBrowserControlModule
+from app.modules.system.clipboard_module import SystemClipboardModule
+from app.modules.system.file_navigation_module import SystemFileNavigationModule
+from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.media_control_module import SystemMediaControlModule
+from app.modules.system.screenshot_module import SystemScreenshotModule
+from app.modules.system.social_messaging_module import SystemSocialMessagingModule
 from app.modules.system.test_module import SystemTestModule
+from app.modules.system.text_input_module import SystemTextInputModule
 from app.modules.system.volume_module import SystemVolumeModule
 from app.modules.system.window_control_module import SystemWindowControlModule
 from app.settings.trigger_store import TriggerStore
@@ -66,9 +76,9 @@ class ModuleRegistry:
                 "actions": [
                     "Сделать снимок основного экрана только по явной просьбе",
                     "Перевести и объяснить видимый текст или ошибку",
-                    "Показать элементы рамками и составить следующие шаги",
-                    "Сохранить размеченный результат в локальный Холст",
-                    "Предложить одно безопасное нажатие после подтверждения",
+                    "Найти нужный элемент и словами объяснить, где он находится",
+                    "Сохранить результат разбора в локальный Холст",
+                    "Использовать содержимое снимка только для текущего запроса",
                 ],
             },
         ]
@@ -115,6 +125,19 @@ class ModuleRegistry:
 def create_default_registry(trigger_store: TriggerStore | None = None) -> ModuleRegistry:
     registry = ModuleRegistry(trigger_store=trigger_store)
     registry.register(SystemTestModule())
+
+    # Longer, more specific intents go first so phrases such as
+    # "сделай скриншот и отправь Диане" never fall through to a generic
+    # screenshot or app-launcher command.
+    if os.environ.get(DESKTOP_TOKEN_ENV):
+        registry.register(SystemSocialMessagingModule())
+
+    registry.register(SystemScreenshotModule())
+    registry.register(SystemBrowserControlModule())
+    registry.register(SystemTextInputModule())
+    registry.register(SystemClipboardModule())
+    registry.register(SystemKeyboardModule())
+    registry.register(SystemFileNavigationModule())
     registry.register(SystemVolumeModule())
     registry.register(SystemMediaControlModule())
     registry.register(SystemWindowControlModule())
