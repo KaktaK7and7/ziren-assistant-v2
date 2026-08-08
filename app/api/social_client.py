@@ -74,9 +74,9 @@ def _name_variants(value: str) -> set[str]:
         word = words[0]
         variants.add(word)
 
-        # Common Russian vocative/dative/accusative endings that appear in
-        # phrases such as "напиши Диане" or "отправь Диме". The resolver
-        # never executes an action on a fuzzy match when two friends are close.
+        # Common Russian dative/accusative endings that appear in phrases such
+        # as "напиши Диане" or "отправь Диме". A fuzzy name is never enough
+        # to execute when two friends remain equally plausible.
         endings = (
             "е",
             "у",
@@ -100,7 +100,7 @@ def _name_variants(value: str) -> set[str]:
         elif word.endswith("я") and len(word) >= 4:
             variants.add(word[:-1] + "е")
             variants.add(word[:-1] + "ю")
-        elif word.endswith("а") is False and len(word) >= 3:
+        elif not word.endswith("а") and len(word) >= 3:
             variants.add(word + "у")
             variants.add(word + "е")
 
@@ -110,10 +110,12 @@ def _name_variants(value: str) -> set[str]:
 def _friend_names(friend: SocialFriend) -> list[tuple[str, int]]:
     names: list[tuple[str, int]] = []
 
+    # A private voice alias is an explicit routing choice made by the owner,
+    # so it must beat an accidentally similar public username by a clear gap.
     if friend.voice_alias:
-        names.append((friend.voice_alias, 3))
+        names.append((friend.voice_alias, 10))
 
-    names.append((friend.username, 2))
+    names.append((friend.username, 0))
     return names
 
 
