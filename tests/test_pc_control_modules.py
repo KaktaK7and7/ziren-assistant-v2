@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from app.modules.system.browser_control_module import SystemBrowserControlModule
 from app.modules.system.clipboard_module import SystemClipboardModule
@@ -6,6 +7,7 @@ from app.modules.system.file_navigation_module import SystemFileNavigationModule
 from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
 from app.modules.system.text_input_module import SystemTextInputModule
+from app.pc_control.file_navigation import is_safe_to_open
 
 
 class PcControlRoutingTests(unittest.TestCase):
@@ -45,6 +47,15 @@ class PcControlRoutingTests(unittest.TestCase):
         self.assertTrue(module.can_handle("покажи последний скачанный файл"))
         self.assertTrue(module.can_handle("открой последний скачанный файл"))
         self.assertFalse(module.can_handle("открой дискорд"))
+
+    def test_download_opening_uses_allowlist_not_executable_blacklist(self) -> None:
+        self.assertTrue(is_safe_to_open(Path("report.pdf")))
+        self.assertTrue(is_safe_to_open(Path("model.blend")))
+        self.assertTrue(is_safe_to_open(Path("archive.zip")))
+        self.assertFalse(is_safe_to_open(Path("installer.exe")))
+        self.assertFalse(is_safe_to_open(Path("script.py")))
+        self.assertFalse(is_safe_to_open(Path("launch.jar")))
+        self.assertFalse(is_safe_to_open(Path("unknown.custom")))
 
 
 if __name__ == "__main__":
