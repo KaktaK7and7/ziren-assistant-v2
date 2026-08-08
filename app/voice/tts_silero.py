@@ -9,6 +9,7 @@ import torch
 from silero import silero_tts
 
 from app.voice.audio_state import AudioState
+from app.voice.runtime import register_tts
 from app.voice.text_utils import (
     clean_text,
     replace_numbers_with_words,
@@ -37,6 +38,7 @@ class SileroTTS:
         self.audio_queue: queue.Queue[AudioItem] = queue.Queue()
         self._worker_thread: Optional[threading.Thread] = None
         self._player_thread: Optional[threading.Thread] = None
+        register_tts(self)
 
     def load(self) -> None:
         print("🔄 Загружаю Silero TTS...")
