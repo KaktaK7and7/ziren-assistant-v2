@@ -5,6 +5,7 @@ from app.modules.base import AssistantModule
 from app.modules.system.app_launcher_module import SystemAppLauncherModule
 from app.modules.system.browser_control_module import SystemBrowserControlModule
 from app.modules.system.clipboard_module import SystemClipboardModule
+from app.modules.system.file_navigation_module import SystemFileNavigationModule
 from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.media_control_module import SystemMediaControlModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
@@ -136,6 +137,7 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     registry.register(SystemTextInputModule())
     registry.register(SystemClipboardModule())
     registry.register(SystemKeyboardModule())
+    registry.register(SystemFileNavigationModule())
     registry.register(SystemVolumeModule())
     registry.register(SystemMediaControlModule())
     registry.register(SystemWindowControlModule())
