@@ -10,6 +10,7 @@ from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.media_control_module import SystemMediaControlModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
 from app.modules.system.social_messaging_module import SystemSocialMessagingModule
+from app.modules.system.system_info_module import SystemInfoModule
 from app.modules.system.test_module import SystemTestModule
 from app.modules.system.text_input_module import SystemTextInputModule
 from app.modules.system.volume_module import SystemVolumeModule
@@ -132,6 +133,7 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     if os.environ.get(DESKTOP_TOKEN_ENV):
         registry.register(SystemSocialMessagingModule())
 
+    registry.register(SystemSystemInfoModule())
     registry.register(SystemScreenshotModule())
     registry.register(SystemBrowserControlModule())
     registry.register(SystemTextInputModule())
