@@ -6,6 +6,7 @@ from app.modules.system.clipboard_module import SystemClipboardModule
 from app.modules.system.file_navigation_module import SystemFileNavigationModule
 from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
+from app.modules.system.system_status_module import SystemStatusModule
 from app.modules.system.text_input_module import SystemTextInputModule
 from app.pc_control.file_navigation import is_safe_to_open
 
@@ -21,7 +22,18 @@ class PcControlRoutingTests(unittest.TestCase):
         module = SystemKeyboardModule()
         self.assertTrue(module.can_handle("выдели всё"))
         self.assertTrue(module.can_handle("нажми enter"))
+        self.assertTrue(module.can_handle("открой диспетчер задач"))
+        self.assertTrue(module.can_handle("закрепи окно слева"))
+        self.assertTrue(module.can_handle("следующий рабочий стол"))
+        self.assertTrue(module.can_handle("покажи все окна"))
         self.assertFalse(module.can_handle("запусти powershell и нажми что угодно"))
+
+    def test_system_status_requires_explicit_status_phrase(self) -> None:
+        module = SystemStatusModule()
+        self.assertTrue(module.can_handle("состояние компьютера"))
+        self.assertTrue(module.can_handle("сколько занято оперативки"))
+        self.assertTrue(module.can_handle("сколько свободно на диске"))
+        self.assertFalse(module.can_handle("открой дискорд"))
 
     def test_text_input_requires_explicit_local_prefix(self) -> None:
         module = SystemTextInputModule()
