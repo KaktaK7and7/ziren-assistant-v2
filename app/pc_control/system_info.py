@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import psutil
@@ -43,3 +44,25 @@ def top_memory_processes(limit: int = 5) -> list[tuple[str, int, float]]:
     rows.sort(key=lambda item: item[2], reverse=True)
     gb = 1024 ** 3
     return [(name, pid, round(rss / gb, 2)) for name, pid, rss in rows[:max(1, min(limit, 10))]]
+
+
+def top_cpu_processes(limit: int = 5) -> list[tuple[str, int, float]]:
+    processes = []
+    for process in psutil.process_iter(["pid", "name"]):
+        try:
+            process.cpu_percent(None)
+            processes.append(process)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    time.sleep(0.18)
+    rows: list[tuple[str, int, float]] = []
+    for process in processes:
+        try:
+            value = float(process.cpu_percent(None))
+            rows.append((process.name() or "process", process.pid, round(value, 1)))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    rows.sort(key=lambda item: item[2], reverse=True)
+    return rows[:max(1, min(limit, 10))]
