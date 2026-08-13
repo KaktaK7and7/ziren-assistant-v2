@@ -31,6 +31,17 @@ KEY_COMMANDS = {
     "save": (["ctrl", "s"], ["сохрани документ", "сохрани файл", "ctrl s"]),
     "find": (["ctrl", "f"], ["открой поиск", "найди на странице", "ctrl f"]),
     "switch_window": (["alt", "tab"], ["следующее окно", "переключи окно", "alt tab", "альт таб"]),
+    "previous_window": (["alt", "shift", "tab"], ["предыдущее окно", "переключись на предыдущее окно"]),
+    "task_manager": (["ctrl", "shift", "escape"], ["открой диспетчер задач", "диспетчер задач"]),
+    "start_menu": (["win"], ["открой пуск", "меню пуск"]),
+    "windows_search": (["win", "s"], ["поиск windows", "открой поиск windows"]),
+    "task_view": (["win", "tab"], ["покажи все окна", "представление задач", "task view"]),
+    "snap_left": (["win", "left"], ["закрепи окно слева", "поставь окно слева", "окно влево"]),
+    "snap_right": (["win", "right"], ["закрепи окно справа", "поставь окно справа", "окно вправо"]),
+    "desktop_left": (["ctrl", "win", "left"], ["предыдущий рабочий стол", "рабочий стол влево"]),
+    "desktop_right": (["ctrl", "win", "right"], ["следующий рабочий стол", "рабочий стол вправо"]),
+    "new_desktop": (["ctrl", "win", "d"], ["создай новый рабочий стол", "новый рабочий стол"]),
+    "fullscreen": (["f11"], ["полноэкранный режим", "на весь экран", "включи полный экран"]),
 }
 
 
@@ -75,10 +86,19 @@ class SystemKeyboardModule(AssistantModule):
             "save": "Сохранила.",
             "find": "Открыла поиск.",
             "switch_window": "Переключаю окно.",
+            "previous_window": "Переключаюсь на предыдущее окно.",
+            "task_manager": "Открываю диспетчер задач.",
+            "start_menu": "Открываю Пуск.",
+            "windows_search": "Открываю поиск Windows.",
+            "task_view": "Показываю открытые окна.",
+            "snap_left": "Закрепляю активное окно слева.",
+            "snap_right": "Закрепляю активное окно справа.",
+            "desktop_left": "Переключаюсь на предыдущий рабочий стол.",
+            "desktop_right": "Переключаюсь на следующий рабочий стол.",
+            "new_desktop": "Создаю новый рабочий стол.",
+            "fullscreen": "Переключаю полноэкранный режим.",
         }
-        return ModuleResponse(
-            text=responses.get(action_id, "Готово.")
-        )
+        return ModuleResponse(text=responses.get(action_id, "Готово."))
 
     def _find_action(self, text: str) -> tuple[str, list[str]] | None:
         normalized = " ".join(str(text or "").lower().replace("ё", "е").split())
