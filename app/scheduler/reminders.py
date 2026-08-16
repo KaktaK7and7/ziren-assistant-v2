@@ -15,6 +15,8 @@ from app.voice.runtime import get_tts
 
 SCHEDULE_FILE = APP_DIR / "scheduled_jobs.json"
 MAX_JOBS = 100
+TTS_WAIT_TIMEOUT_SECONDS = 90.0
+TTS_RETRY_SECONDS = 0.35
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,7 @@ class ReminderWorker:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -158,23 +161,61 @@ class ReminderWorker:
         )
 
         if job.kind == "alarm":
-            self._beep_alarm()
+            threading.Thread(
+                target=self._beep_alarm,
+                daemon=True,
+                name=f"ziren-alarm-{job.job_id}",
+            ).start()
 
-        tts = get_tts()
-        if tts is not None:
+        threading.Thread(
+            target=self._speak_when_available,
+            args=(message, job.job_id),
+            daemon=True,
+            name=f"ziren-reminder-tts-{job.job_id}",
+        ).start()
+
+    def _speak_when_available(self, message: str, job_id: str) -> None:
+        deadline = time.monotonic() + TTS_WAIT_TIMEOUT_SECONDS
+
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            tts = get_tts()
+            if tts is None:
+                self._stop.wait(TTS_RETRY_SECONDS)
+                continue
+
             try:
+                state = getattr(tts, "state", None)
+                speaking_event = getattr(state, "is_speaking", None)
+                is_speaking = bool(
+                    speaking_event is not None
+                    and callable(getattr(speaking_event, "is_set", None))
+                    and speaking_event.is_set()
+                )
+                if is_speaking:
+                    self._stop.wait(TTS_RETRY_SECONDS)
+                    continue
+
                 tts.speak(message)
+                return
             except Exception as error:
                 add_log(
                     "scheduler.tts.failed",
                     level="warn",
-                    meta={"error": str(error)},
+                    meta={"job_id": job_id, "error": str(error)},
                 )
+                return
+
+        add_log(
+            "scheduler.tts.timeout",
+            level="warn",
+            meta={"job_id": job_id},
+        )
 
     @staticmethod
     def _beep_alarm() -> None:
         try:
             import winsound
+
             winsound.Beep(1000, 700)
             winsound.Beep(1200, 700)
         except Exception:
