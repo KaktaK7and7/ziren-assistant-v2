@@ -8,6 +8,9 @@ from app.pc_control.screenshot import ScreenshotError, capture_and_save
 
 
 SCREENSHOT_TRIGGERS = [
+    "скриншот",
+    "скрин",
+    "сделать скриншот",
     "сделай скриншот",
     "сделай скрин",
     "сохрани скриншот",
@@ -36,7 +39,8 @@ class SystemScreenshotModule(AssistantModule):
                 rf"\b{re.escape(trigger.lower().replace('ё', 'е'))}\b",
                 normalized,
             )
-            for trigger in SCREENSHOT_TRIGGERS
+            for trigger in self.get_action_triggers("screenshot.save")
+            if trigger.strip()
         )
 
     def handle(self, text: str) -> ModuleResponse:
