@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
@@ -53,6 +54,7 @@ class SystemKeyboardModule(AssistantModule):
         f"keyboard.{action_id}": {
             "display_name": action_id.replace("_", " ").title(),
             "triggers": triggers,
+            "argument_hint": "Без аргументов. Нажимается только заранее разрешённая клавиша или сочетание.",
         }
         for action_id, (_keys, triggers) in KEY_COMMANDS.items()
     }
@@ -67,7 +69,22 @@ class SystemKeyboardModule(AssistantModule):
             return ModuleResponse(text="Не поняла команду клавиатуры.")
 
         action_id, keys = action
+        return self._execute_keys(action_id, keys)
 
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if not action_id.startswith("keyboard."):
+            return None
+        local_id = action_id.removeprefix("keyboard.")
+        action = KEY_COMMANDS.get(local_id)
+        if action is None:
+            return None
+        return self._execute_keys(local_id, list(action[0]))
+
+    def _execute_keys(self, action_id: str, keys: list[str]) -> ModuleResponse:
         try:
             if len(keys) == 1:
                 press_key(keys[0])
