@@ -12,9 +12,9 @@ from app.pc_control.windows_input import (
 
 
 KEY_COMMANDS = {
-    "enter": (["enter"], ["нажми enter", "нажми энтер", "энтер"]),
-    "escape": (["escape"], ["нажми escape", "нажми esc", "нажми эскейп"]),
-    "tab": (["tab"], ["нажми tab", "нажми таб"]),
+    "enter": (["enter"], ["нажми enter", "нажми энтер", "нажми клавишу enter", "нажми клавишу энтер", "энтер"]),
+    "escape": (["escape"], ["нажми escape", "нажми esc", "нажми эскейп", "нажми клавишу escape"]),
+    "tab": (["tab"], ["нажми tab", "нажми таб", "нажми клавишу tab", "нажми клавишу таб"]),
     "backspace": (["backspace"], ["нажми backspace", "нажми бэкспейс", "нажми бекспейс"]),
     "delete": (["delete"], ["нажми delete", "нажми делит"]),
     "space": (["space"], ["нажми пробел"]),
@@ -104,9 +104,12 @@ class SystemKeyboardModule(AssistantModule):
         normalized = " ".join(str(text or "").lower().replace("ё", "е").split())
         matches: list[tuple[int, str, list[str]]] = []
 
-        for action_id, (keys, triggers) in KEY_COMMANDS.items():
-            for trigger in triggers:
+        for action_id, (keys, _default_triggers) in KEY_COMMANDS.items():
+            group_id = f"keyboard.{action_id}"
+            for trigger in self.get_action_triggers(group_id):
                 normalized_trigger = " ".join(trigger.lower().replace("ё", "е").split())
+                if not normalized_trigger:
+                    continue
                 if re.search(rf"\b{re.escape(normalized_trigger)}\b", normalized):
                     matches.append((len(normalized_trigger), action_id, list(keys)))
 
