@@ -12,6 +12,56 @@ from app.pc_control.brightness import (
 )
 
 
+_ORDINAL_MONITORS = {
+    "первый": 1,
+    "первого": 1,
+    "первом": 1,
+    "второй": 2,
+    "второго": 2,
+    "втором": 2,
+    "третий": 3,
+    "третьего": 3,
+    "третьем": 3,
+    "четвертый": 4,
+    "четвертого": 4,
+    "четвертом": 4,
+}
+
+_PERCENT_WORDS = {
+    "ноль": 0,
+    "один": 1,
+    "одна": 1,
+    "два": 2,
+    "две": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+    "шесть": 6,
+    "семь": 7,
+    "восемь": 8,
+    "девять": 9,
+    "десять": 10,
+    "одиннадцать": 11,
+    "двенадцать": 12,
+    "тринадцать": 13,
+    "четырнадцать": 14,
+    "пятнадцать": 15,
+    "шестнадцать": 16,
+    "семнадцать": 17,
+    "восемнадцать": 18,
+    "девятнадцать": 19,
+    "двадцать": 20,
+    "тридцать": 30,
+    "сорок": 40,
+    "пятьдесят": 50,
+    "шестьдесят": 60,
+    "семьдесят": 70,
+    "восемьдесят": 80,
+    "девяносто": 90,
+    "сто": 100,
+}
+
+
 class SystemBrightnessModule(AssistantModule):
     feature_id = "system.brightness"
     display_name = "Яркость мониторов"
@@ -47,7 +97,9 @@ class SystemBrightnessModule(AssistantModule):
         if parsed is None:
             return ModuleResponse(text="Не поняла команду яркости.")
         action_id, arguments = parsed
-        return self.execute_action(action_id, arguments) or ModuleResponse(text="Не смогла изменить яркость.")
+        return self.execute_action(action_id, arguments) or ModuleResponse(
+            text="Не смогла изменить яркость."
+        )
 
     def execute_action(
         self,
@@ -73,7 +125,10 @@ class SystemBrightnessModule(AssistantModule):
                 changed = set_brightness(percent, monitor)
                 if len(changed) == 1:
                     return ModuleResponse(
-                        text=f"Установила яркость монитора {changed[0]} на {percent} процентов."
+                        text=(
+                            f"Установила яркость монитора {changed[0]} "
+                            f"на {percent} процентов."
+                        )
                     )
                 return ModuleResponse(
                     text=f"Установила яркость {percent} процентов на мониторах: "
@@ -87,34 +142,77 @@ class SystemBrightnessModule(AssistantModule):
 
     def _parse_local(self, text: str) -> tuple[str, dict[str, Any]] | None:
         normalized = self._normalize(text)
-        if any(
-            normalized == self._normalize(trigger)
-            or normalized.startswith(self._normalize(trigger) + " ")
-            for trigger in self.get_action_triggers("brightness.get")
-        ) and not re.search(r"\b\d{1,3}\b", normalized):
-            monitor = self._monitor_from_text(normalized)
+        monitor = self._monitor_from_text(normalized)
+
+        if self._starts_with_action_trigger(normalized, "brightness.get"):
             return "brightness.get", {"monitor": monitor} if monitor else {}
 
-        if not any(
-            normalized == self._normalize(trigger)
-            or normalized.startswith(self._normalize(trigger) + " ")
-            for trigger in self.get_action_triggers("brightness.set")
-        ):
+        if not self._starts_with_action_trigger(normalized, "brightness.set"):
             return None
 
-        percent_match = re.search(r"\b(100|\d{1,2})\s*(?:%|процент\w*)?\b", normalized)
-        if not percent_match:
-            return "brightness.set", {}
-        monitor = self._monitor_from_text(normalized)
-        return "brightness.set", {
-            "percent": int(percent_match.group(1)),
-            **({"monitor": monitor} if monitor else {}),
-        }
+        percent = self._percent_from_text(normalized)
+        arguments: dict[str, Any] = {}
+        if percent is not None:
+            arguments["percent"] = percent
+        if monitor is not None:
+            arguments["monitor"] = monitor
+        return "brightness.set", arguments
 
-    @staticmethod
-    def _monitor_from_text(text: str) -> int | None:
-        match = re.search(r"(?:монитор\w*|экран\w*)\s+(\d+)", text)
-        return int(match.group(1)) if match else None
+    def _starts_with_action_trigger(self, text: str, action_id: str) -> bool:
+        return any(
+            text == needle or text.startswith(needle + " ")
+            for trigger in self.get_action_triggers(action_id)
+            if (needle := self._normalize(trigger))
+        )
+
+    @classmethod
+    def _monitor_from_text(cls, text: str) -> int | None:
+        numeric_patterns = (
+            r"(?:монитор\w*|экран\w*)\s*(?:номер\s*)?(\d+)",
+            r"(\d+)\s*(?:монитор\w*|экран\w*)",
+        )
+        for pattern in numeric_patterns:
+            match = re.search(pattern, text)
+            if match:
+                value = int(match.group(1))
+                return value if value > 0 else None
+
+        words = text.split()
+        for index, word in enumerate(words):
+            value = _ORDINAL_MONITORS.get(word)
+            if value is None:
+                continue
+            nearby = words[max(0, index - 1) : index + 3]
+            if any(token.startswith("монитор") or token.startswith("экран") for token in nearby):
+                return value
+        return None
+
+    @classmethod
+    def _percent_from_text(cls, text: str) -> int | None:
+        explicit = re.findall(r"\b(100|\d{1,2})\s*(?:%|процент\w*)\b", text)
+        if explicit:
+            return int(explicit[-1])
+
+        numeric_values = [int(value) for value in re.findall(r"\b(100|\d{1,2})\b", text)]
+        if numeric_values:
+            # When a monitor number and brightness are both present, brightness
+            # is conventionally the last number: "монитор 2 яркость 40".
+            return numeric_values[-1]
+
+        words = [word.strip(" ,.!?:;") for word in text.split()]
+        for index in range(len(words) - 1):
+            left = _PERCENT_WORDS.get(words[index])
+            right = _PERCENT_WORDS.get(words[index + 1])
+            if left is not None and left >= 20 and left % 10 == 0 and right is not None and right < 10:
+                value = left + right
+                if 0 <= value <= 100:
+                    return value
+
+        for word in reversed(words):
+            value = _PERCENT_WORDS.get(word)
+            if value is not None and 0 <= value <= 100:
+                return value
+        return None
 
     @staticmethod
     def _optional_int(value: object) -> int | None:
