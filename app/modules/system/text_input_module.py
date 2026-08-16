@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
@@ -27,6 +28,7 @@ class SystemTextInputModule(AssistantModule):
         "text.type": {
             "display_name": "Ввести продиктованный текст",
             "triggers": TEXT_INPUT_PREFIXES,
+            "argument_hint": "arguments.text — текст, который нужно напечатать в активное поле.",
         }
     }
 
@@ -35,10 +37,23 @@ class SystemTextInputModule(AssistantModule):
 
     def handle(self, text: str) -> ModuleResponse:
         value = self._extract_text(text)
-
         if value is None:
             return ModuleResponse(text="Не поняла, какой текст ввести.")
+        return self._type_value(value)
 
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if action_id != "text.type":
+            return None
+        raw = (arguments or {}).get("text")
+        if not isinstance(raw, str):
+            return ModuleResponse(text="Не поняла, какой текст нужно напечатать.")
+        return self._type_value(raw.strip())
+
+    def _type_value(self, value: str) -> ModuleResponse:
         if not value:
             return ModuleResponse(text="После команды продиктуй текст.")
 
