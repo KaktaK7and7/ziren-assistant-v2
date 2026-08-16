@@ -59,7 +59,6 @@ class CommandRouter:
 
         command_text = text.strip().lower()
 
-        # Fast path: exact known trigger. This saves latency for common commands.
         for module in self.registry.all():
             has_explicit_trigger = any(
                 command_text == trigger.strip().lower()
@@ -82,7 +81,10 @@ class CommandRouter:
         return self._route_semantic(command_text)
 
     def _route_semantic(self, command_text: str) -> CommandRouteResult | None:
-        capabilities = self.registry.get_ai_capabilities()
+        capability_builder = getattr(self.registry, "get_ai_capabilities", None)
+        if not callable(capability_builder):
+            return None
+        capabilities = capability_builder()
         if not capabilities:
             return None
 
@@ -105,6 +107,12 @@ class CommandRouter:
             )
             return None
 
+        module = self.registry.get_module_by_feature_id(result.feature_id)
+        if module is None:
+            return None
+        if not self.feature_gate.is_allowed(module.feature_id, module.plan):
+            return None
+
         executed = self.registry.execute_action(
             result.feature_id,
             result.action_id,
@@ -122,9 +130,6 @@ class CommandRouter:
             return None
 
         module, response = executed
-        if not self.feature_gate.is_allowed(module.feature_id, module.plan):
-            return None
-
         add_log(
             "Мелисса выбрала локальную функцию",
             meta={
