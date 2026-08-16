@@ -1,3 +1,4 @@
+import sys
 from collections import deque
 from datetime import datetime
 from threading import Lock
@@ -20,7 +21,29 @@ def add_log(event: str, level: str = "info", meta: dict[str, Any] | None = None)
     with _lock:
         _logs.append(item)
 
-    print(f"[{item['ts']}] [{level.upper()}] {event}")
+    _safe_console_print(f"[{item['ts']}] [{level.upper()}] {event}")
+
+
+def _safe_console_print(value: str) -> None:
+    """Console diagnostics must never be able to crash the assistant."""
+    try:
+        print(value)
+        return
+    except UnicodeEncodeError:
+        pass
+    except (OSError, ValueError):
+        return
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        safe_value = value.encode(encoding, errors="replace").decode(
+            encoding,
+            errors="replace",
+        )
+        print(safe_value)
+    except Exception:
+        # The structured in-memory log above is still available to the GUI.
+        return
 
 
 def get_logs() -> list[dict[str, Any]]:
