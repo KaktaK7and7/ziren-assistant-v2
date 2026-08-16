@@ -1,7 +1,8 @@
 import os
+from typing import Any
 
 from app.config.settings import DESKTOP_TOKEN_ENV
-from app.modules.base import AssistantModule
+from app.modules.base import AssistantModule, ModuleResponse
 from app.modules.system.app_launcher_module import SystemAppLauncherModule
 from app.modules.system.browser_control_module import SystemBrowserControlModule
 from app.modules.system.clipboard_module import SystemClipboardModule
@@ -39,6 +40,22 @@ class ModuleRegistry:
 
         return None
 
+    def execute_action(
+        self,
+        feature_id: str,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> tuple[AssistantModule, ModuleResponse] | None:
+        module = self.get_module_by_feature_id(feature_id)
+        if module is None:
+            return None
+        if action_id not in module.get_default_trigger_groups():
+            return None
+        response = module.execute_action(action_id, arguments or {})
+        if response is None:
+            return None
+        return module, response
+
     def get_feature_trigger_data(self) -> list[dict]:
         return [self.build_feature_trigger_response(module) for module in self._modules]
 
@@ -50,38 +67,50 @@ class ModuleRegistry:
                 "plan": self._plan_value(module),
                 "triggers": self._flatten_groups(module.get_default_trigger_groups()),
                 "default_trigger_groups": self._format_groups(
-                    module.get_default_trigger_groups()
+                    module,
+                    module.get_default_trigger_groups(),
                 ),
             }
             for module in self._modules
         ]
 
     def get_ai_capabilities(self) -> list[dict]:
-        module_capabilities = [
+        result: list[dict] = []
+        for module in self._modules:
+            supports_structured = (
+                module.__class__.execute_action is not AssistantModule.execute_action
+            )
+            if not supports_structured:
+                continue
+
+            actions = []
+            defaults = module.get_default_trigger_groups()
+            for action_id, group in defaults.items():
+                actions.append({
+                    "action_id": action_id,
+                    "display_name": str(group.get("display_name", action_id)),
+                    "argument_hint": str(group.get("argument_hint", "")),
+                })
+
+            if actions:
+                result.append({
+                    "feature_id": module.feature_id,
+                    "display_name": module.display_name,
+                    "actions": actions[:40],
+                })
+
+        return result
+
+    def get_public_capabilities(self) -> list[dict]:
+        return [
             {
                 "feature_id": module.feature_id,
                 "display_name": module.display_name,
-                "actions": [
-                    str(group.get("display_name", action_id))
-                    for action_id, group in module.get_trigger_groups().items()
-                ][:16],
+                "plan": self._plan_value(module),
+                "actions": self._format_groups(module, module.get_trigger_groups()),
             }
             for module in self._modules
-        ]
-
-        return [
-            *module_capabilities,
-            {
-                "feature_id": "screen.analysis",
-                "display_name": "Разовый анализ экрана",
-                "actions": [
-                    "Сделать снимок основного экрана только по явной просьбе",
-                    "Перевести и объяснить видимый текст или ошибку",
-                    "Найти нужный элемент и словами объяснить, где он находится",
-                    "Сохранить результат разбора в локальный Холст",
-                    "Использовать содержимое снимка только для текущего запроса",
-                ],
-            },
+            if module.feature_id != "system.test"
         ]
 
     def build_feature_trigger_response(self, module: AssistantModule) -> dict:
@@ -92,15 +121,26 @@ class ModuleRegistry:
             "display_name": module.display_name,
             "plan": self._plan_value(module),
             "triggers": module.get_triggers(),
-            "trigger_groups": self._format_groups(trigger_groups),
+            "trigger_groups": self._format_groups(module, trigger_groups),
         }
 
-    def _format_groups(self, groups: dict[str, dict]) -> list[dict]:
+    def _format_groups(
+        self,
+        module: AssistantModule,
+        groups: dict[str, dict],
+    ) -> list[dict]:
+        defaults = module.get_default_trigger_groups()
+        structured = module.__class__.execute_action is not AssistantModule.execute_action
         return [
             {
                 "action_id": action_id,
                 "display_name": str(group.get("display_name", action_id)),
                 "triggers": list(group.get("triggers", [])),
+                "argument_hint": str(
+                    defaults.get(action_id, {}).get("argument_hint", "")
+                ),
+                "melissa_semantic": structured,
+                "snake_triggers": True,
             }
             for action_id, group in groups.items()
         ]
@@ -127,9 +167,6 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     registry = ModuleRegistry(trigger_store=trigger_store)
     registry.register(SystemTestModule())
 
-    # Longer, more specific intents go first so phrases such as
-    # "сделай скриншот и отправь Диане" never fall through to a generic
-    # screenshot or app-launcher command.
     if os.environ.get(DESKTOP_TOKEN_ENV):
         registry.register(SystemSocialMessagingModule())
 
