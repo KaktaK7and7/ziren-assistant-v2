@@ -63,6 +63,7 @@ class AssistantModule(ABC):
                 action_id: {
                     "display_name": str(group.get("display_name", action_id)),
                     "triggers": list(group.get("triggers", [])),
+                    "argument_hint": str(group.get("argument_hint", "")),
                 }
                 for action_id, group in self.default_trigger_groups.items()
                 if isinstance(action_id, str) and isinstance(group, dict)
@@ -73,6 +74,7 @@ class AssistantModule(ABC):
                 "default": {
                     "display_name": self.display_name,
                     "triggers": list(self.default_triggers),
+                    "argument_hint": "",
                 }
             }
 
@@ -90,6 +92,22 @@ class AssistantModule(ABC):
             return []
 
         return [trigger for trigger in triggers if isinstance(trigger, str)]
+
+    def get_action_argument_hint(self, action_id: str) -> str:
+        group = self.get_default_trigger_groups().get(action_id, {})
+        return str(group.get("argument_hint", ""))
+
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        """Execute an allow-listed structured action selected by Melissa.
+
+        Modules opt in action-by-action. Returning None means the action is not
+        available for semantic execution and must never be guessed by the router.
+        """
+        return None
 
     @abstractmethod
     def can_handle(self, text: str) -> bool:
