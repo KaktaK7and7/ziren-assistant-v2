@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
@@ -26,6 +27,7 @@ class SystemScreenshotModule(AssistantModule):
         "screenshot.save": {
             "display_name": "Сохранить снимок экрана",
             "triggers": SCREENSHOT_TRIGGERS,
+            "argument_hint": "Без аргументов. Делает снимок основного экрана и сохраняет его локально.",
         }
     }
 
@@ -44,6 +46,18 @@ class SystemScreenshotModule(AssistantModule):
         )
 
     def handle(self, text: str) -> ModuleResponse:
+        return self._save()
+
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if action_id != "screenshot.save":
+            return None
+        return self._save()
+
+    def _save(self) -> ModuleResponse:
         try:
             path = capture_and_save()
         except (ScreenshotError, OSError, RuntimeError) as error:
