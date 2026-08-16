@@ -9,6 +9,9 @@ from app.modules.system.clipboard_module import SystemClipboardModule
 from app.modules.system.file_navigation_module import SystemFileNavigationModule
 from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.media_control_module import SystemMediaControlModule
+from app.modules.system.monitor_control_module import SystemMonitorControlModule
+from app.modules.system.power_control_module import SystemPowerControlModule
+from app.modules.system.screen_recording_module import SystemScreenRecordingModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
 from app.modules.system.social_messaging_module import SystemSocialMessagingModule
 from app.modules.system.system_status_module import SystemStatusModule
@@ -170,6 +173,9 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     if os.environ.get(DESKTOP_TOKEN_ENV):
         registry.register(SystemSocialMessagingModule())
 
+    registry.register(SystemPowerControlModule())
+    registry.register(SystemScreenRecordingModule())
+    registry.register(SystemMonitorControlModule())
     registry.register(SystemStatusModule())
     registry.register(SystemScreenshotModule())
     registry.register(SystemBrowserControlModule())
