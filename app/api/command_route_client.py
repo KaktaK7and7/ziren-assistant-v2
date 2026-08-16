@@ -16,6 +16,7 @@ from app.config.settings import AUTH_SITE_URL, DESKTOP_TOKEN_ENV, get_desktop_to
 @dataclass(frozen=True)
 class SemanticCommandResult:
     matched: bool = False
+    command_like: bool = False
     feature_id: str = ""
     action_id: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
@@ -59,31 +60,43 @@ class CommandRouteClient:
         )
 
         if response.status_code in (401, 403):
-            return SemanticCommandResult(reason="authentication required")
+            return SemanticCommandResult(reason="system: authentication required")
 
         response.raise_for_status()
         data = response.json()
-        if not isinstance(data, dict) or data.get("matched") is not True:
+        if not isinstance(data, dict):
+            return SemanticCommandResult(reason="system: invalid gateway response")
+
+        reason = str(data.get("reason") or "")[:300]
+        # Older auth-site gateway revisions did not forward command_like yet.
+        # The AI service therefore also stamps the normalized reason with an
+        # authoritative command:/chat: prefix so intent survives the gateway.
+        command_like = data.get("command_like") is True or reason.startswith("command:")
+        confidence = _safe_confidence(data.get("confidence"))
+
+        if data.get("matched") is not True:
             return SemanticCommandResult(
-                confidence=_safe_confidence(data.get("confidence") if isinstance(data, dict) else 0),
-                reason=str(data.get("reason") or "")[:300] if isinstance(data, dict) else "",
+                command_like=command_like,
+                confidence=confidence,
+                reason=reason,
             )
 
-        confidence = _safe_confidence(data.get("confidence"))
         if confidence < 0.78:
             return SemanticCommandResult(
+                command_like=True,
                 confidence=confidence,
-                reason="semantic confidence below threshold",
+                reason="command: semantic confidence below threshold",
             )
 
         arguments = data.get("arguments")
         return SemanticCommandResult(
             matched=True,
+            command_like=True,
             feature_id=str(data.get("feature_id") or "")[:100],
             action_id=str(data.get("action_id") or "")[:120],
             arguments=arguments if isinstance(arguments, dict) else {},
             confidence=confidence,
-            reason=str(data.get("reason") or "")[:300],
+            reason=reason,
         )
 
 
