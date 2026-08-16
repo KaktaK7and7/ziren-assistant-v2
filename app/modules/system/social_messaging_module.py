@@ -5,6 +5,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from app.api.social_client import (
     SocialApiError,
@@ -26,6 +27,7 @@ from app.voice.runtime import get_tts
 POLL_SECONDS = 4.0
 ERROR_BACKOFF_SECONDS = 15.0
 MAX_ANNOUNCED_BODY_LENGTH = 600
+MAX_OUTGOING_BODY_LENGTH = 4_000
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,10 @@ class SystemSocialMessagingModule(AssistantModule):
         "social.message.text": {
             "display_name": "Написать другу",
             "triggers": ["напиши", "отправь сообщение"],
+            "argument_hint": (
+                "arguments.recipient — ник или личное голосовое имя друга; "
+                "arguments.message — текст сообщения."
+            ),
         },
         "social.message.screenshot": {
             "display_name": "Отправить снимок экрана",
@@ -52,6 +58,7 @@ class SystemSocialMessagingModule(AssistantModule):
                 "отправь скриншот",
                 "отправь скрин",
             ],
+            "argument_hint": "arguments.recipient — ник или личное голосовое имя друга.",
         },
         "social.message.clipboard": {
             "display_name": "Отправить скопированный текст",
@@ -61,6 +68,7 @@ class SystemSocialMessagingModule(AssistantModule):
                 "отправь то что скопировано",
                 "отправь то, что скопировано",
             ],
+            "argument_hint": "arguments.recipient — ник или личное голосовое имя друга.",
         },
     }
 
@@ -102,36 +110,7 @@ class SystemSocialMessagingModule(AssistantModule):
 
     def handle(self, text: str) -> ModuleResponse:
         try:
-            command = self._parse_command(text)
-
-            if command.kind == "text":
-                self.client.send_text(command.friend, command.body, kind="text")
-                return ModuleResponse(
-                    text=f"Отправила сообщение для {command.friend.voice_name}."
-                )
-
-            if command.kind == "clipboard":
-                copied = read_text()
-                self.client.send_text(
-                    command.friend,
-                    copied,
-                    kind="clipboard",
-                )
-                return ModuleResponse(
-                    text=f"Отправила скопированный текст для {command.friend.voice_name}."
-                )
-
-            if command.kind == "screenshot":
-                screenshot = capture_primary_screen()
-                self.client.send_screenshot(
-                    command.friend,
-                    screenshot.data_url,
-                )
-                return ModuleResponse(
-                    text=f"Сделала скриншот и отправила его для {command.friend.voice_name}."
-                )
-
-            return ModuleResponse(text="Не поняла, что нужно отправить.")
+            return self._execute_command(self._parse_command(text))
         except ClipboardError as error:
             return ModuleResponse(text=f"Не смогла отправить буфер обмена: {error}")
         except SocialAuthenticationError:
@@ -147,6 +126,79 @@ class SystemSocialMessagingModule(AssistantModule):
                 meta={"error": str(error)},
             )
             return ModuleResponse(text="Не получилось отправить сообщение.")
+
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if action_id not in self.default_trigger_groups:
+            return None
+
+        args = arguments or {}
+        recipient = str(args.get("recipient") or "").strip()
+        if not recipient:
+            return ModuleResponse(text="Уточни, кому отправить сообщение.")
+
+        try:
+            friend = self._resolve_recipient_only(recipient)
+            if action_id == "social.message.text":
+                body = str(args.get("message") or "").strip()
+                if not body:
+                    return ModuleResponse(text="Скажи, что написать другу.")
+                if len(body) > MAX_OUTGOING_BODY_LENGTH:
+                    return ModuleResponse(text="Сообщение слишком длинное для одной голосовой команды.")
+                command = SocialCommand(kind="text", friend=friend, body=body)
+            elif action_id == "social.message.screenshot":
+                command = SocialCommand(kind="screenshot", friend=friend)
+            else:
+                command = SocialCommand(kind="clipboard", friend=friend)
+            return self._execute_command(command)
+        except ClipboardError as error:
+            return ModuleResponse(text=f"Не смогла отправить буфер обмена: {error}")
+        except SocialAuthenticationError:
+            return ModuleResponse(
+                text="Сессия Ziren устарела. Перезайди в аккаунт, чтобы отправлять сообщения."
+            )
+        except SocialApiError as error:
+            return ModuleResponse(text=str(error))
+        except Exception as error:
+            add_log(
+                "social.message.semantic_failed",
+                level="error",
+                meta={"action_id": action_id, "error": str(error)},
+            )
+            return ModuleResponse(text="Не получилось отправить сообщение.")
+
+    def _execute_command(self, command: SocialCommand) -> ModuleResponse:
+        if command.kind == "text":
+            self.client.send_text(command.friend, command.body, kind="text")
+            return ModuleResponse(
+                text=f"Отправила сообщение для {command.friend.voice_name}."
+            )
+
+        if command.kind == "clipboard":
+            copied = read_text()
+            self.client.send_text(
+                command.friend,
+                copied,
+                kind="clipboard",
+            )
+            return ModuleResponse(
+                text=f"Отправила скопированный текст для {command.friend.voice_name}."
+            )
+
+        if command.kind == "screenshot":
+            screenshot = capture_primary_screen()
+            self.client.send_screenshot(
+                command.friend,
+                screenshot.data_url,
+            )
+            return ModuleResponse(
+                text=f"Сделала скриншот и отправила его для {command.friend.voice_name}."
+            )
+
+        return ModuleResponse(text="Не поняла, что нужно отправить.")
 
     def stop(self) -> None:
         self._stop_event.set()
