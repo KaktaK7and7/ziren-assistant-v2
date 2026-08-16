@@ -6,6 +6,8 @@ from app.storage.local_store import APP_DIR, read_json, write_json
 
 COMPANION_SETTINGS_FILE = APP_DIR / "companion_settings.json"
 DEFAULT_COMPANION_SETTINGS = {
+    "melissa_command_mode_enabled": True,
+    "snake_command_mode_enabled": True,
     "command_reactions_enabled": True,
     "command_reaction_chance": 0.3,
     "command_reaction_cooldown_minutes": 10,
@@ -43,6 +45,8 @@ class CompanionSettingsStore:
         result = deepcopy(DEFAULT_COMPANION_SETTINGS)
 
         for key in (
+            "melissa_command_mode_enabled",
+            "snake_command_mode_enabled",
             "command_reactions_enabled",
             "proactive_dialogue_enabled",
             "quiet_hours_enabled",
