@@ -6,6 +6,7 @@ from app.api.command_route_client import SemanticCommandResult
 from app.features.feature_gate import FeatureGate
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
+from app.modules.registry import create_default_registry
 from app.modules.system.brightness_module import SystemBrightnessModule
 from app.modules.system.file_navigation_module import SystemFileNavigationModule
 from app.modules.system.keyboard_module import SystemKeyboardModule
@@ -124,6 +125,34 @@ class FakeSemanticClient:
 
 
 class ControlRoutingV2Tests(unittest.TestCase):
+    def test_default_registry_contains_control_v2_capabilities(self):
+        registry = create_default_registry()
+        feature_ids = {module.feature_id for module in registry.all()}
+        required = {
+            "system.app_launcher",
+            "system.window_control",
+            "system.keyboard",
+            "system.text_input",
+            "system.clipboard",
+            "system.file_navigation",
+            "system.volume",
+            "system.media_control",
+            "system.screenshot",
+            "system.screen_recording",
+            "system.status",
+            "system.brightness",
+            "system.monitors",
+            "system.scheduler",
+            "system.power",
+        }
+        self.assertTrue(required.issubset(feature_ids), required - feature_ids)
+
+        ai_feature_ids = {
+            feature["feature_id"]
+            for feature in registry.get_ai_capabilities()
+        }
+        self.assertTrue(required.issubset(ai_feature_ids), required - ai_feature_ids)
+
     def test_text_input_accepts_reported_infinitive_phrase(self):
         module = SystemTextInputModule()
         self.assertTrue(module.can_handle("напечатать текст привет брат"))
