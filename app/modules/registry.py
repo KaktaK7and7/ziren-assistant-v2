@@ -4,6 +4,7 @@ from typing import Any
 from app.config.settings import DESKTOP_TOKEN_ENV
 from app.modules.base import AssistantModule, ModuleResponse
 from app.modules.system.app_launcher_module import SystemAppLauncherModule
+from app.modules.system.brightness_module import SystemBrightnessModule
 from app.modules.system.browser_control_module import SystemBrowserControlModule
 from app.modules.system.clipboard_module import SystemClipboardModule
 from app.modules.system.file_navigation_module import SystemFileNavigationModule
@@ -178,6 +179,7 @@ def create_default_registry(trigger_store: TriggerStore | None = None) -> Module
     registry.register(SystemSchedulerModule())
     registry.register(SystemScreenRecordingModule())
     registry.register(SystemMonitorControlModule())
+    registry.register(SystemBrightnessModule())
     registry.register(SystemStatusModule())
     registry.register(SystemScreenshotModule())
     registry.register(SystemBrowserControlModule())
