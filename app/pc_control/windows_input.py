@@ -52,14 +52,27 @@ class WindowsInputError(RuntimeError):
     pass
 
 
-def _require_windows():
-    if os.name != "nt":
-        raise WindowsInputError("Управление клавиатурой доступно только в Windows")
+def _build_input_types(ctypes, wintypes):
+    """Build the real Win32 INPUT layout.
 
-    import ctypes
-    from ctypes import wintypes
+    INPUT contains a union of MOUSEINPUT, KEYBDINPUT and HARDWAREINPUT.  It is
+    tempting to declare only KEYBDINPUT when we inject keyboard events, but
+    that changes sizeof(INPUT) (notably from 40 to 32 bytes on 64-bit Windows).
+    SendInput requires cbSize to be exactly sizeof the native INPUT structure
+    and returns zero for the truncated layout.
+    """
 
-    ULONG_PTR = wintypes.WPARAM
+    ULONG_PTR = ctypes.c_size_t
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
 
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [
@@ -70,8 +83,19 @@ def _require_windows():
             ("dwExtraInfo", ULONG_PTR),
         ]
 
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", wintypes.DWORD),
+            ("wParamL", wintypes.WORD),
+            ("wParamH", wintypes.WORD),
+        ]
+
     class INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
+        _fields_ = [
+            ("mi", MOUSEINPUT),
+            ("ki", KEYBDINPUT),
+            ("hi", HARDWAREINPUT),
+        ]
 
     class INPUT(ctypes.Structure):
         _anonymous_ = ("union",)
@@ -80,45 +104,67 @@ def _require_windows():
             ("union", INPUT_UNION),
         ]
 
-    return ctypes, KEYBDINPUT, INPUT
+    return KEYBDINPUT, INPUT
 
 
-def _send_vk(vk_code: int, key_up: bool = False) -> None:
-    ctypes, KEYBDINPUT, INPUT = _require_windows()
-    flags = KEYEVENTF_KEYUP if key_up else 0
+def _require_windows():
+    if os.name != "nt":
+        raise WindowsInputError("Управление клавиатурой доступно только в Windows")
+
+    import ctypes
+    from ctypes import wintypes
+
+    KEYBDINPUT, INPUT = _build_input_types(ctypes, wintypes)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendInput.argtypes = [
+        wintypes.UINT,
+        ctypes.POINTER(INPUT),
+        ctypes.c_int,
+    ]
+    user32.SendInput.restype = wintypes.UINT
+
+    return ctypes, user32, KEYBDINPUT, INPUT
+
+
+def _send_keyboard_packet(*, vk_code: int, scan_code: int, flags: int, error_label: str) -> None:
+    ctypes, user32, KEYBDINPUT, INPUT = _require_windows()
     packet = INPUT(
         type=INPUT_KEYBOARD,
         ki=KEYBDINPUT(
             wVk=vk_code,
-            wScan=0,
+            wScan=scan_code,
             dwFlags=flags,
             time=0,
             dwExtraInfo=0,
         ),
     )
-    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(INPUT))
 
-    if sent != 1:
-        raise WindowsInputError("Windows не приняла ввод с клавиатуры")
+    ctypes.set_last_error(0)
+    sent = user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(INPUT))
+    if sent == 1:
+        return
+
+    error_code = ctypes.get_last_error()
+    suffix = f" (WinError {error_code})" if error_code else ""
+    raise WindowsInputError(f"{error_label}{suffix}")
+
+
+def _send_vk(vk_code: int, key_up: bool = False) -> None:
+    _send_keyboard_packet(
+        vk_code=vk_code,
+        scan_code=0,
+        flags=KEYEVENTF_KEYUP if key_up else 0,
+        error_label="Windows не приняла ввод с клавиатуры",
+    )
 
 
 def _send_unicode_unit(unit: int, key_up: bool = False) -> None:
-    ctypes, KEYBDINPUT, INPUT = _require_windows()
-    flags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if key_up else 0)
-    packet = INPUT(
-        type=INPUT_KEYBOARD,
-        ki=KEYBDINPUT(
-            wVk=0,
-            wScan=unit,
-            dwFlags=flags,
-            time=0,
-            dwExtraInfo=0,
-        ),
+    _send_keyboard_packet(
+        vk_code=0,
+        scan_code=unit,
+        flags=KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if key_up else 0),
+        error_label="Windows не приняла текстовый ввод",
     )
-    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(INPUT))
-
-    if sent != 1:
-        raise WindowsInputError("Windows не приняла текстовый ввод")
 
 
 def normalize_key_name(value: str) -> str:

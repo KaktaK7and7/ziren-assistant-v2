@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
@@ -11,6 +12,8 @@ TEXT_INPUT_PREFIXES = [
     "введи текст",
     "напечатай",
     "напечатай текст",
+    "напечатать",
+    "напечатать текст",
     "напиши здесь",
     "введи сюда",
 ]
@@ -25,6 +28,7 @@ class SystemTextInputModule(AssistantModule):
         "text.type": {
             "display_name": "Ввести продиктованный текст",
             "triggers": TEXT_INPUT_PREFIXES,
+            "argument_hint": "arguments.text — текст, который нужно напечатать в активное поле.",
         }
     }
 
@@ -33,10 +37,23 @@ class SystemTextInputModule(AssistantModule):
 
     def handle(self, text: str) -> ModuleResponse:
         value = self._extract_text(text)
-
         if value is None:
             return ModuleResponse(text="Не поняла, какой текст ввести.")
+        return self._type_value(value)
 
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if action_id != "text.type":
+            return None
+        raw = (arguments or {}).get("text")
+        if not isinstance(raw, str):
+            return ModuleResponse(text="Не поняла, какой текст нужно напечатать.")
+        return self._type_value(raw.strip())
+
+    def _type_value(self, value: str) -> ModuleResponse:
         if not value:
             return ModuleResponse(text="После команды продиктуй текст.")
 
@@ -53,9 +70,18 @@ class SystemTextInputModule(AssistantModule):
     def _extract_text(self, text: str) -> str | None:
         source = " ".join(str(text or "").split()).strip()
         lowered = source.lower().replace("ё", "е")
+        prefixes = sorted(
+            (
+                trigger
+                for trigger in self.get_action_triggers("text.type")
+                if trigger.strip()
+            ),
+            key=len,
+            reverse=True,
+        )
 
-        for prefix in sorted(TEXT_INPUT_PREFIXES, key=len, reverse=True):
-            normalized_prefix = prefix.lower().replace("ё", "е")
+        for prefix in prefixes:
+            normalized_prefix = prefix.lower().replace("ё", "е").strip()
             match = re.match(
                 rf"^{re.escape(normalized_prefix)}(?:\s*[:,-]?\s*)(.*)$",
                 lowered,
@@ -63,13 +89,6 @@ class SystemTextInputModule(AssistantModule):
             if match is None:
                 continue
 
-            # Use the original text slice so capitalization/punctuation from STT
-            # are preserved as much as possible instead of typing the normalized copy.
-            prefix_match = re.match(
-                rf"^\s*.{{0,{max(0, len(prefix) + 4)}}}",
-                source,
-            )
-            _ = prefix_match  # keep parsing deliberately based on word count below
             source_words = source.split()
             prefix_words = prefix.split()
             value = " ".join(source_words[len(prefix_words):]).strip(" :-,")

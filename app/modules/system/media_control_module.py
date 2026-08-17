@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 from app.core.log_bus import add_log
 from app.features.plans import Plan
@@ -28,6 +29,7 @@ class SystemMediaControlModule(AssistantModule):
                 "пауза",
                 "поставь на паузу",
             ],
+            "argument_hint": "Без аргументов. Отправляет системную media pause команду.",
         },
         "media.resume": {
             "display_name": "Продолжить",
@@ -35,6 +37,7 @@ class SystemMediaControlModule(AssistantModule):
                 "продолжи",
                 "продолжи музыку",
             ],
+            "argument_hint": "Без аргументов. Возобновляет системное медиавоспроизведение.",
         },
         "media.next": {
             "display_name": "Следующий трек",
@@ -42,6 +45,7 @@ class SystemMediaControlModule(AssistantModule):
                 "следующий трек",
                 "следующая песня",
             ],
+            "argument_hint": "Без аргументов. Переключает на следующий трек.",
         },
         "media.previous": {
             "display_name": "Предыдущий трек",
@@ -49,21 +53,24 @@ class SystemMediaControlModule(AssistantModule):
                 "предыдущий трек",
                 "предыдущая песня",
             ],
+            "argument_hint": "Без аргументов. Переключает на предыдущий трек.",
         },
         "media.stop": {
             "display_name": "Остановить музыку",
             "triggers": [
                 "останови музыку",
             ],
+            "argument_hint": "Без аргументов. Останавливает системное медиавоспроизведение.",
         },
         "media.play_preset": {
-            "display_name": "Включить плейлист / сценарий",
+            "display_name": "Открыть музыкальный сценарий",
             "triggers": [
                 "включи",
                 "включи музыку",
                 "поставь",
                 "запусти музыку",
             ],
+            "argument_hint": "arguments.target — название или пользовательский алиас сохранённого музыкального сценария.",
         },
     }
 
@@ -94,15 +101,32 @@ class SystemMediaControlModule(AssistantModule):
 
         action_id, action, trigger = action_match
         query = self._extract_query(normalized_text, trigger)
+        if action == "play_preset":
+            query = self._find_preset_query(normalized_text, trigger) or query
+        return self._execute(action_id, query)
+
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if action_id not in ACTION_BY_GROUP:
+            return None
+        query = str((arguments or {}).get("target") or "").strip()
+        return self._execute(action_id, query)
+
+    def _execute(self, action_id: str, query: str = "") -> ModuleResponse:
+        action = ACTION_BY_GROUP[action_id]
 
         add_log(
             "MediaControl команда получена",
-            meta={"action": action, "query": query, "trigger": trigger},
+            meta={"action": action, "query": query, "action_id": action_id},
         )
 
         if action == "play_preset":
-            preset_query = self._find_preset_query(normalized_text, trigger) or query
-            result = self.resolver.play_preset(preset_query)
+            if not query:
+                return ModuleResponse(text="Скажи, какой музыкальный сценарий включить.")
+            result = self.resolver.play_preset(query)
         else:
             result = self.resolver.perform_basic(action)
 
@@ -173,8 +197,5 @@ class SystemMediaControlModule(AssistantModule):
 
         if action == "stop":
             return "Останавливаю музыку."
-
-        if result.preset is not None:
-            return result.message
 
         return result.message

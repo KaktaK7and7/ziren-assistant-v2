@@ -3,3 +3,4 @@ num2words>=0.5.14,<1
 Pillow>=10,<13
 uiautomation==2.0.29
 psutil>=5.9,<8
+pycaw>=20240210

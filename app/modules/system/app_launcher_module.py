@@ -1,5 +1,6 @@
 import re
 import time
+from typing import Any
 
 from app.app_launcher.debug import app_debug_step
 from app.app_launcher.matcher import normalize_text
@@ -31,52 +32,23 @@ QUERY_STOP_WORDS = [
 PENDING_SELECTION_TTL_SECONDS = 30.0
 SELECTION_ALIASES = {
     0: [
-        "1",
-        "один",
-        "первый",
-        "первую",
-        "вариант один",
-        "номер один",
-        "открой первый",
-        "запусти первый",
+        "1", "один", "первый", "первую", "вариант один", "номер один",
+        "открой первый", "запусти первый",
     ],
     1: [
-        "2",
-        "два",
-        "второй",
-        "вторую",
-        "вариант два",
-        "номер два",
-        "открой второй",
-        "запусти второй",
+        "2", "два", "второй", "вторую", "вариант два", "номер два",
+        "открой второй", "запусти второй",
     ],
     2: [
-        "3",
-        "три",
-        "третий",
-        "третью",
-        "вариант три",
-        "номер три",
-        "открой третий",
-        "запусти третий",
+        "3", "три", "третий", "третью", "вариант три", "номер три",
+        "открой третий", "запусти третий",
     ],
     3: [
-        "4",
-        "четыре",
-        "четвертый",
-        "четвёртый",
-        "четвертую",
-        "четвёртую",
-        "вариант четыре",
-        "номер четыре",
+        "4", "четыре", "четвертый", "четвёртый", "четвертую", "четвёртую",
+        "вариант четыре", "номер четыре",
     ],
     4: [
-        "5",
-        "пять",
-        "пятый",
-        "пятую",
-        "вариант пять",
-        "номер пять",
+        "5", "пять", "пятый", "пятую", "вариант пять", "номер пять",
     ],
 }
 
@@ -97,6 +69,10 @@ class SystemAppLauncherModule(AssistantModule):
                 "открой игру",
                 "запусти игру",
             ],
+            "argument_hint": (
+                "arguments.target — название приложения, игры или пользовательский алиас. "
+                "Локальный AppResolver сам выбирает только известную цель."
+            ),
         }
     }
 
@@ -125,9 +101,7 @@ class SystemAppLauncherModule(AssistantModule):
                 {
                     "text": text,
                     "pending_query": self.pending_query,
-                    "candidates": [
-                        candidate.name for candidate in self.pending_candidates
-                    ],
+                    "candidates": [candidate.name for candidate in self.pending_candidates],
                 },
             )
             pending_response = self._handle_pending_selection(text)
@@ -139,10 +113,28 @@ class SystemAppLauncherModule(AssistantModule):
                 self._clear_pending_selection()
 
         query = self._extract_query(text)
+        return self._launch_query(query, raw_text=text)
+
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if action_id != "app.launch":
+            return None
+        target = normalize_text(str((arguments or {}).get("target") or ""))
+        if not target:
+            return ModuleResponse(text="Скажи, какое приложение открыть.")
+        if len(target) > 200:
+            return ModuleResponse(text="Название приложения получилось слишком длинным.")
+        self._clear_pending_selection()
+        return self._launch_query(target, raw_text="semantic")
+
+    def _launch_query(self, query: str, *, raw_text: str) -> ModuleResponse:
         app_debug_step(
             "command received",
             {
-                "raw_text": text,
+                "raw_text": raw_text,
                 "query": query,
             },
         )
@@ -180,9 +172,7 @@ class SystemAppLauncherModule(AssistantModule):
                 "pending selection created",
                 {
                     "query": query,
-                    "candidates": [
-                        candidate.name for candidate in self.pending_candidates
-                    ],
+                    "candidates": [candidate.name for candidate in self.pending_candidates],
                 },
             )
 
@@ -203,7 +193,6 @@ class SystemAppLauncherModule(AssistantModule):
             )
 
         self._emit_not_found(query)
-
         return ModuleResponse(
             text=resolution.message
             or "Не смогла уверенно понять, какое приложение открыть. Попробуй назвать его точнее."
@@ -342,10 +331,7 @@ class SystemAppLauncherModule(AssistantModule):
         speech_name = self._target_speech_name(target, fallback_spoken_name)
 
         if self.resolver.launcher.last_launch_was_elevated:
-            return (
-                f"Открываю {speech_name} с повышенными правами. "
-                
-            )
+            return f"Открываю {speech_name} с повышенными правами. "
         return self._format_open_response(target, fallback_spoken_name)
 
     def _is_launch_command(self, text: str) -> bool:

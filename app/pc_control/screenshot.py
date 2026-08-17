@@ -20,6 +20,21 @@ def default_screenshot_directory() -> Path:
     return pictures / "Ziren" / "Screenshots"
 
 
+def open_screenshot_directory() -> Path:
+    target = default_screenshot_directory()
+    target.mkdir(parents=True, exist_ok=True)
+
+    if os.name != "nt" or not hasattr(os, "startfile"):
+        raise ScreenshotError("Открытие папки скриншотов доступно только в Windows")
+
+    try:
+        os.startfile(str(target))
+    except OSError as error:
+        raise ScreenshotError(f"Не удалось открыть папку скриншотов: {error}") from error
+
+    return target
+
+
 def save_capture(
     capture: CapturedScreen,
     directory: Path | None = None,

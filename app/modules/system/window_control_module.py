@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 from app.core.log_bus import add_log
 from app.features.plans import Plan
@@ -6,7 +7,7 @@ from app.modules.base import AssistantModule, ModuleResponse
 from app.window_control.resolver import WindowResolver, normalize_text
 
 
-QUERY_STOP_WORDS = ["приложение", "окно", "игру", "игра"]
+QUERY_STOP_WORDS = ["приложение", "окно", "игру", "игра", "папку", "папка"]
 
 ACTION_BY_GROUP = {
     "window.close": "close",
@@ -23,41 +24,43 @@ class SystemWindowControlModule(AssistantModule):
     plan = Plan.FREE
     default_trigger_groups = {
         "window.close": {
-            "display_name": "Закрыть приложение",
+            "display_name": "Закрыть окно или приложение",
             "triggers": [
                 "закрой",
                 "закрой приложение",
                 "выключи приложение",
                 "закрой окно",
                 "закрой игру",
-                "выруби",
-                "выруби приложение",
             ],
+            "argument_hint": "arguments.target — название окна, папки или приложения. Закрытие обычное, как крестик окна.",
         },
         "window.minimize": {
-            "display_name": "Свернуть приложение",
+            "display_name": "Свернуть окно",
             "triggers": [
                 "сверни",
                 "сверни приложение",
                 "сверни окно",
             ],
+            "argument_hint": "arguments.target — название окна или приложения.",
         },
         "window.maximize": {
-            "display_name": "Развернуть приложение",
+            "display_name": "Развернуть окно",
             "triggers": [
                 "разверни",
                 "разверни приложение",
                 "разверни окно",
             ],
+            "argument_hint": "arguments.target — название окна или приложения.",
         },
         "window.restore": {
-            "display_name": "Показать окно",
+            "display_name": "Переключиться на окно",
             "triggers": [
                 "покажи окно",
                 "верни окно",
                 "восстанови окно",
                 "переключись на",
             ],
+            "argument_hint": "arguments.target — название окна или приложения.",
         },
         "window.desktop": {
             "display_name": "Показать рабочий стол",
@@ -66,6 +69,7 @@ class SystemWindowControlModule(AssistantModule):
                 "сверни все окна",
                 "рабочий стол",
             ],
+            "argument_hint": "Без аргументов.",
         },
     }
 
@@ -85,7 +89,22 @@ class SystemWindowControlModule(AssistantModule):
 
         action_id, action, trigger = action_match
         query = "" if action == "desktop" else self._extract_query(normalized_text, trigger)
+        return self._perform(action_id, action, query, trigger)
 
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        action = ACTION_BY_GROUP.get(action_id)
+        if action is None:
+            return None
+        target = "" if action == "desktop" else str((arguments or {}).get("target") or "").strip()
+        if action != "desktop" and not target:
+            return ModuleResponse(text="Уточни, какое окно нужно выбрать.")
+        return self._perform(action_id, action, normalize_text(target), "semantic")
+
+    def _perform(self, action_id: str, action: str, query: str, trigger: str) -> ModuleResponse:
         add_log(
             "WindowControl команда получена",
             meta={"action": action, "query": query, "trigger": trigger},
@@ -125,12 +144,6 @@ class SystemWindowControlModule(AssistantModule):
         if result.status == "not_found":
             add_log("WindowControl окно не найдено", meta={"query": query}, level="warn")
             return ModuleResponse(text=f"Не нашла открытое окно {query}.")
-
-        if "Нельзя закрыть системный процесс" in result.message:
-            return ModuleResponse(text="Нельзя закрыть системный процесс.")
-
-        if "Нет прав для закрытия процесса" in result.message:
-            return ModuleResponse(text="Не хватает прав для закрытия процесса.")
 
         return ModuleResponse(text=f"Не смогла выполнить действие: {result.message}")
 

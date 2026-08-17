@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
@@ -64,6 +65,7 @@ class SystemBrowserControlModule(AssistantModule):
         f"browser.{action_id}": {
             "display_name": action_id.replace("_", " ").title(),
             "triggers": action["triggers"],
+            "argument_hint": "Без аргументов. Действие применяется к активному браузеру.",
         }
         for action_id, action in BROWSER_ACTIONS.items()
     }
@@ -77,6 +79,21 @@ class SystemBrowserControlModule(AssistantModule):
         if action_id is None:
             return ModuleResponse(text="Не поняла команду браузера.")
 
+        return self._execute(action_id)
+
+    def execute_action(
+        self,
+        action_id: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> ModuleResponse | None:
+        if not action_id.startswith("browser."):
+            return None
+        local_id = action_id.removeprefix("browser.")
+        if local_id not in BROWSER_ACTIONS:
+            return None
+        return self._execute(local_id)
+
+    def _execute(self, action_id: str) -> ModuleResponse:
         action = BROWSER_ACTIONS[action_id]
 
         try:
@@ -90,10 +107,10 @@ class SystemBrowserControlModule(AssistantModule):
         normalized = " ".join(str(text or "").lower().replace("ё", "е").split())
         matches: list[tuple[int, str]] = []
 
-        for action_id, action in BROWSER_ACTIONS.items():
-            for trigger in action["triggers"]:
+        for action_id in BROWSER_ACTIONS:
+            for trigger in self.get_action_triggers(f"browser.{action_id}"):
                 normalized_trigger = " ".join(trigger.lower().replace("ё", "е").split())
-                if re.search(rf"\b{re.escape(normalized_trigger)}\b", normalized):
+                if normalized_trigger and re.search(rf"\b{re.escape(normalized_trigger)}\b", normalized):
                     matches.append((len(normalized_trigger), action_id))
 
         if not matches:
