@@ -62,15 +62,24 @@ class CommandRouteClient:
         if response.status_code in (401, 403):
             return SemanticCommandResult(reason="system: authentication required")
 
+        if response.status_code == 402:
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+            code = str(data.get("code") or "subscription_required")[:80]
+            message = str(data.get("error") or "Мелисса недоступна для текущего тарифа")[:240]
+            return SemanticCommandResult(
+                command_like=True,
+                reason=f"subscription:{code}:{message}",
+            )
+
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
             return SemanticCommandResult(reason="system: invalid gateway response")
 
         reason = str(data.get("reason") or "")[:300]
-        # Older auth-site gateway revisions did not forward command_like yet.
-        # The AI service therefore also stamps the normalized reason with an
-        # authoritative command:/chat: prefix so intent survives the gateway.
         command_like = data.get("command_like") is True or reason.startswith("command:")
         confidence = _safe_confidence(data.get("confidence"))
 
