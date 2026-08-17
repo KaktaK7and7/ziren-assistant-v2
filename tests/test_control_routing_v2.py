@@ -1,5 +1,7 @@
+import ctypes
 import unittest
 from copy import deepcopy
+from ctypes import wintypes
 from unittest.mock import patch
 
 from app.api.command_route_client import SemanticCommandResult
@@ -13,7 +15,9 @@ from app.modules.system.keyboard_module import SystemKeyboardModule
 from app.modules.system.power_control_module import SystemPowerControlModule
 from app.modules.system.scheduler_module import SystemSchedulerModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
+from app.modules.system.system_status_module import SystemStatusModule
 from app.modules.system.text_input_module import SystemTextInputModule
+from app.pc_control.windows_input import _build_input_types
 from app.router.command_router import CommandRouter
 
 
@@ -152,6 +156,26 @@ class ControlRoutingV2Tests(unittest.TestCase):
             for feature in registry.get_ai_capabilities()
         }
         self.assertTrue(required.issubset(ai_feature_ids), required - ai_feature_ids)
+
+    def test_winapi_input_layout_has_native_size(self):
+        _, input_type = _build_input_types(ctypes, wintypes)
+        expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+        self.assertEqual(ctypes.sizeof(input_type), expected_size)
+
+    def test_gpu_temperature_response_does_not_speak_gpu_model(self):
+        module = SystemStatusModule()
+        with patch(
+            "app.modules.system.system_status_module.read_nvidia_temperatures",
+            return_value=[("NVIDIA GeForce RTX TEST", 47)],
+        ):
+            response = module.execute_action("system.status.gpu_temperature", {})
+        self.assertEqual(response.text, "47 градусов.")
+        self.assertNotIn("NVIDIA", response.text)
+        self.assertNotIn("GeForce", response.text)
+
+    def test_gpu_temperature_accepts_common_vosk_case_variant(self):
+        module = SystemStatusModule()
+        self.assertTrue(module.can_handle("какая температура видеокарте"))
 
     def test_text_input_accepts_reported_infinitive_phrase(self):
         module = SystemTextInputModule()
