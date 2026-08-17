@@ -91,10 +91,26 @@ class ModuleRegistry:
             actions = []
             defaults = module.get_default_trigger_groups()
             for action_id, group in defaults.items():
+                argument_hint = str(group.get("argument_hint", "")).strip()
+                trigger_examples = [
+                    " ".join(trigger.split())
+                    for trigger in group.get("triggers", [])
+                    if isinstance(trigger, str) and trigger.strip()
+                ][:4]
+                if trigger_examples:
+                    examples = "; ".join(trigger_examples)
+                    argument_hint = (
+                        f"{argument_hint} Голосовые примеры: {examples}."
+                        if argument_hint
+                        else f"Голосовые примеры: {examples}."
+                    )
+
                 actions.append({
                     "action_id": action_id,
                     "display_name": str(group.get("display_name", action_id)),
-                    "argument_hint": str(group.get("argument_hint", "")),
+                    # Gateway intentionally caps this field; keep the useful voice
+                    # examples near the beginning of the semantic capability data.
+                    "argument_hint": argument_hint[:320],
                 })
 
             if actions:
