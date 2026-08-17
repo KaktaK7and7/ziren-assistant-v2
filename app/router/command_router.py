@@ -96,6 +96,27 @@ class CommandRouter:
             )
             return self._route_explicit_local_fallback(command_text)
 
+        if result.reason.startswith("subscription:"):
+            parts = result.reason.split(":", 2)
+            code = parts[1] if len(parts) > 1 else "subscription_required"
+            server_message = parts[2] if len(parts) > 2 else ""
+            add_log(
+                "Мелисса ограничена тарифом",
+                level="warn",
+                meta={"code": code},
+            )
+            if code == "ai_budget_exhausted":
+                text = (
+                    server_message
+                    or "AI-ресурс на текущий период закончился. Змея и локальные команды продолжают работать."
+                )
+            else:
+                text = (
+                    server_message
+                    or "Мелисса доступна на тарифах Plus и Pro. Змея и локальные команды остаются бесплатными."
+                )
+            return self._command_rejected_notice(result.reason, 0.0, text)
+
         if result.matched:
             module = self.registry.get_module_by_feature_id(result.feature_id)
             if module is None:
