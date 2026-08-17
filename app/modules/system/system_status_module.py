@@ -24,6 +24,8 @@ SUMMARY_TRIGGERS = [
 GPU_TEMP_TRIGGERS = [
     "температура видеокарты",
     "какая температура видеокарты",
+    "какая температура видеокарте",
+    "температура видеокарте",
     "температура gpu",
     "температура гпу",
     "насколько горячая видеокарта",
@@ -89,15 +91,12 @@ class SystemStatusModule(AssistantModule):
         except GpuTemperatureError as error:
             return ModuleResponse(text=str(error))
 
-        if len(rows) == 1:
-            name, temperature = rows[0]
-            return ModuleResponse(text=f"Температура {name}: {temperature} градусов.")
+        temperatures = [temperature for _, temperature in rows[:4]]
+        if len(temperatures) == 1:
+            return ModuleResponse(text=f"{temperatures[0]} градусов.")
 
-        summary = ", ".join(
-            f"{name}: {temperature} градусов"
-            for name, temperature in rows[:4]
-        )
-        return ModuleResponse(text=f"Температура видеокарт: {summary}.")
+        values = ", ".join(str(value) for value in temperatures)
+        return ModuleResponse(text=f"Температуры: {values} градусов.")
 
     def _find_action(self, text: str) -> str | None:
         normalized = self._normalize(text)
