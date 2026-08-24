@@ -42,7 +42,7 @@ class WebCapabilityExportReleaseTests(unittest.TestCase):
         try:
             manifest = build_web_manifest(include_authenticated=True)
             feature_ids = {feature["feature_id"] for feature in manifest["features"]}
-            self.assertIn("system.social_messaging", feature_ids)
+            self.assertIn("social.messaging", feature_ids)
             self.assertNotIn(DESKTOP_TOKEN_ENV, os.environ)
         finally:
             if previous is not None:
