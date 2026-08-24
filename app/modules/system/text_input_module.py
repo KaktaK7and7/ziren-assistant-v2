@@ -28,7 +28,10 @@ class SystemTextInputModule(AssistantModule):
         "text.type": {
             "display_name": "Ввести продиктованный текст",
             "triggers": TEXT_INPUT_PREFIXES,
-            "argument_hint": "arguments.text — текст, который нужно напечатать в активное поле.",
+            "argument_hint": (
+                "arguments.text — текст, который нужно передать в активное окно. "
+                "Core подтверждает отправку Unicode input, но не утверждает, что конкретное приложение приняло текст."
+            ),
         }
     }
 
@@ -63,9 +66,9 @@ class SystemTextInputModule(AssistantModule):
         try:
             type_unicode_text(value)
         except WindowsInputError as error:
-            return ModuleResponse(text=f"Не смогла ввести текст: {error}")
+            return ModuleResponse(text=f"Не смогла передать текст: {error}")
 
-        return ModuleResponse(text="Напечатала.")
+        return ModuleResponse(text="Передала текст в активное окно.")
 
     def _extract_text(self, text: str) -> str | None:
         source = " ".join(str(text or "").split()).strip()
