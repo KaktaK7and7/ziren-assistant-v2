@@ -42,6 +42,13 @@ class ReminderStore:
         with self._lock:
             return [job for job in self._read_jobs() if job.due_at <= current]
 
+    def has_job(self, job_id: str) -> bool:
+        target = str(job_id or "")
+        if not target:
+            return False
+        with self._lock:
+            return any(job.job_id == target for job in self._read_jobs())
+
     def add(self, kind: str, label: str, due_at: float) -> ScheduledJob:
         clean_kind = kind if kind in {"reminder", "alarm"} else "reminder"
         clean_label = " ".join(str(label or "").split())[:500]
@@ -181,6 +188,16 @@ class ReminderWorker:
 
     def _deliver_and_ack(self, job: ScheduledJob) -> None:
         try:
+            # A job may have been claimed by the worker just before the user
+            # explicitly removed/cleared it. Treat removal as cancellation even
+            # for an in-flight delivery thread.
+            if not self.store.has_job(job.job_id):
+                add_log(
+                    "scheduler.job.cancelled_before_delivery",
+                    meta={"job_id": job.job_id, "kind": job.kind},
+                )
+                return
+
             message = (
                 f"Будильник. {job.label}"
                 if job.kind == "alarm"
@@ -200,15 +217,26 @@ class ReminderWorker:
                 },
             )
 
+            if not self.store.has_job(job.job_id):
+                return
+
             if job.kind == "alarm":
                 self._beep_alarm()
 
-            if self._speak_when_available(message, job.job_id):
-                self.store.remove(job.job_id)
+            delivery = self._speak_when_available(message, job.job_id)
+            if delivery is None:
                 add_log(
-                    "scheduler.job.delivered",
+                    "scheduler.job.cancelled_inflight",
                     meta={"job_id": job.job_id, "kind": job.kind},
                 )
+                return
+
+            if delivery:
+                if self.store.remove(job.job_id):
+                    add_log(
+                        "scheduler.job.delivered",
+                        meta={"job_id": job.job_id, "kind": job.kind},
+                    )
                 return
 
             add_log(
@@ -229,10 +257,13 @@ class ReminderWorker:
         finally:
             self._release(job.job_id)
 
-    def _speak_when_available(self, message: str, job_id: str) -> bool:
+    def _speak_when_available(self, message: str, job_id: str) -> bool | None:
         deadline = time.monotonic() + TTS_WAIT_TIMEOUT_SECONDS
 
         while not self._stop.is_set() and time.monotonic() < deadline:
+            if not self.store.has_job(job_id):
+                return None
+
             tts = get_tts()
             if tts is None:
                 self._stop.wait(TTS_RETRY_SECONDS)
@@ -249,6 +280,11 @@ class ReminderWorker:
                 if is_speaking:
                     self._stop.wait(TTS_RETRY_SECONDS)
                     continue
+
+                # Check again immediately before speech: clear/remove may happen
+                # while we were waiting for another utterance to finish.
+                if not self.store.has_job(job_id):
+                    return None
 
                 tts.speak(message)
                 return True
