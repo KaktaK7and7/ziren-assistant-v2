@@ -12,14 +12,21 @@ from scripts.windows_release_smoke import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SMOKE_SCRIPT = REPO_ROOT / "scripts" / "windows_release_smoke.py"
+
+
 class WindowsReleaseSmokeTests(unittest.TestCase):
     def test_session_ending_cases_are_hidden_by_default(self):
         cases = selected_cases(include_session_ending=False, monitor_count=2)
+        case_ids = {case.case_id for case in cases}
 
         self.assertTrue(cases)
         self.assertTrue(all(not case.session_ending for case in cases))
-        self.assertNotIn("power.sleep", {case.case_id for case in cases})
-        self.assertNotIn("power.restart", {case.case_id for case in cases})
+        self.assertNotIn("power.lock", case_ids)
+        self.assertNotIn("power.sleep", case_ids)
+        self.assertNotIn("power.restart", case_ids)
+        self.assertNotIn("power.shutdown", case_ids)
 
     def test_session_ending_cases_require_explicit_opt_in(self):
         cases = selected_cases(include_session_ending=True, monitor_count=2)
@@ -28,6 +35,7 @@ class WindowsReleaseSmokeTests(unittest.TestCase):
         self.assertIn("power.lock", case_ids)
         self.assertIn("power.sleep", case_ids)
         self.assertIn("power.restart", case_ids)
+        self.assertIn("power.shutdown", case_ids)
 
     def test_multi_monitor_case_is_skipped_when_machine_reports_one_monitor(self):
         one_monitor = selected_cases(include_session_ending=False, monitor_count=1)
@@ -75,12 +83,26 @@ class WindowsReleaseSmokeTests(unittest.TestCase):
 
         self.assertEqual(loaded["results"][0]["note"], "Привет ✓")
 
+    def test_smoke_harness_does_not_import_pc_control_execution_backends(self):
+        source = SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertNotIn("from app.pc_control", source)
+        self.assertNotIn("import app.pc_control", source)
+        self.assertNotIn("shutdown_workstation", source)
+        self.assertNotIn("restart_workstation", source)
+        self.assertNotIn("sleep_workstation", source)
+
     def test_catalog_contains_required_p0_manual_gates(self):
         case_ids = {case.case_id for case in SMOKE_CASES}
         required = {
             "keyboard.unicode.notepad",
             "keyboard.unicode.chromium",
+            "keyboard.unicode.win32",
+            "keyboard.function_keys",
+            "keyboard.hotkeys",
+            "clipboard.text",
             "windows.common_apps",
+            "windows.close",
             "desktops.sequence",
             "capture.screenshot",
             "recording.gamebar",
@@ -90,9 +112,11 @@ class WindowsReleaseSmokeTests(unittest.TestCase):
             "display.brightness",
             "display.multi_monitor",
             "files.known_folders",
+            "files.latest_download",
             "power.lock",
             "power.sleep",
             "power.restart",
+            "power.shutdown",
         }
 
         self.assertTrue(required.issubset(case_ids))
