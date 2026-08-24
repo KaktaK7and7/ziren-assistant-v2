@@ -1,8 +1,17 @@
+import json
 import os
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from app.config.settings import DESKTOP_TOKEN_ENV
 from scripts.export_web_capabilities import MANIFEST_VERSION, build_web_manifest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_web_capabilities.py"
 
 
 class WebCapabilityExportReleaseTests(unittest.TestCase):
@@ -58,6 +67,40 @@ class WebCapabilityExportReleaseTests(unittest.TestCase):
                     self.assertIsInstance(action["snake"], bool)
                     self.assertIsInstance(action["melissa"], bool)
                     self.assertLessEqual(len(action["example"]), 80)
+
+    def test_exporter_runs_as_direct_cli_without_pythonpath(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "assistant-capabilities.json"
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(EXPORT_SCRIPT),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=REPO_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout={completed.stdout}\nstderr={completed.stderr}",
+            )
+            self.assertTrue(output_path.is_file())
+            manifest = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["generated_from"],
+                "ziren-assistant-v2:ModuleRegistry",
+            )
+            self.assertTrue(manifest["features"])
 
 
 if __name__ == "__main__":
