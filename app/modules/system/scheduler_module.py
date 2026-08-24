@@ -171,44 +171,45 @@ class SystemSchedulerModule(AssistantModule):
         if not source:
             return None
         source_words = source.split()
-        normalized_words = [word.lower().replace("ё", "е") for word in source_words]
-        normalized = " ".join(normalized_words)
+        normalized_words = [
+            word.lower().replace("ё", "е").strip(" ,.!?:;")
+            for word in source_words
+        ]
+        normalized = " ".join(word for word in normalized_words if word)
 
-        relative_specs = (
-            (
-                "scheduler.reminder.relative",
-                (("напомни", "через"), ("создай", "напоминание", "через")),
-            ),
-            (
-                "scheduler.alarm.relative",
-                (("поставь", "будильник", "через"), ("будильник", "через")),
-            ),
-        )
-        for action_id, prefixes in relative_specs:
-            for prefix in prefixes:
-                if tuple(normalized_words[: len(prefix)]) != prefix:
-                    continue
-                parsed = self._parse_relative_tail(
-                    normalized_words,
-                    source_words,
-                    len(prefix),
-                )
-                if parsed is not None:
-                    return action_id, parsed
-
-        for prefix in (
-            ("поставь", "будильник", "на"),
-            ("будильник", "на"),
+        for action_id in (
+            "scheduler.reminder.relative",
+            "scheduler.alarm.relative",
         ):
-            if tuple(normalized_words[: len(prefix)]) != prefix:
+            prefix_length = self._trigger_prefix_length(normalized_words, action_id)
+            if prefix_length is None:
                 continue
-            parsed_clock = self._parse_clock_words(
-                normalized_words[len(prefix) :],
+            parsed = self._parse_relative_tail(
+                normalized_words,
+                source_words,
+                prefix_length,
             )
+            # Once a configured trigger matched, keep the command in the local
+            # Snake route even when the user omitted arguments; execute_action
+            # will ask for the missing interval instead of falling through.
+            return action_id, parsed or {}
+
+        clock_prefix_length = self._trigger_prefix_length(
+            normalized_words,
+            "scheduler.alarm.clock",
+        )
+        if clock_prefix_length is not None:
+            clock_start = clock_prefix_length
+            if (
+                clock_start < len(normalized_words)
+                and normalized_words[clock_start] == "на"
+            ):
+                clock_start += 1
+            parsed_clock = self._parse_clock_words(normalized_words[clock_start:])
             if parsed_clock is None:
                 return "scheduler.alarm.clock", {}
             hour, minute, consumed = parsed_clock
-            label = " ".join(source_words[len(prefix) + consumed :]).strip()
+            label = " ".join(source_words[clock_start + consumed :]).strip()
             return (
                 "scheduler.alarm.clock",
                 {
@@ -218,11 +219,40 @@ class SystemSchedulerModule(AssistantModule):
             )
 
         for action_id in ("scheduler.list", "scheduler.clear"):
-            for trigger in self.get_action_triggers(action_id):
-                if normalized == trigger.lower().replace("ё", "е"):
-                    return action_id, {}
+            if self._matches_exact_trigger(normalized, action_id):
+                return action_id, {}
 
         return None
+
+    def _trigger_prefix_length(
+        self,
+        normalized_words: list[str],
+        action_id: str,
+    ) -> int | None:
+        candidates: list[tuple[int, tuple[str, ...]]] = []
+        for trigger in self.get_action_triggers(action_id):
+            words = tuple(
+                word.lower().replace("ё", "е").strip(" ,.!?:;")
+                for word in str(trigger or "").split()
+                if word.strip(" ,.!?:;")
+            )
+            if words:
+                candidates.append((len(words), words))
+
+        for length, words in sorted(candidates, key=lambda item: item[0], reverse=True):
+            if tuple(normalized_words[:length]) == words:
+                return length
+        return None
+
+    def _matches_exact_trigger(self, normalized: str, action_id: str) -> bool:
+        return any(
+            normalized
+            == " ".join(
+                str(trigger or "").lower().replace("ё", "е").split()
+            ).strip(" ,.!?:;")
+            for trigger in self.get_action_triggers(action_id)
+            if str(trigger or "").strip()
+        )
 
     def _parse_relative_tail(
         self,
@@ -230,6 +260,9 @@ class SystemSchedulerModule(AssistantModule):
         source_words: list[str],
         start: int,
     ) -> dict[str, Any] | None:
+        if start < len(normalized_words) and normalized_words[start] == "через":
+            start += 1
+
         unit_index = -1
         for index in range(start, min(len(normalized_words), start + 5)):
             word = normalized_words[index].strip(".,!?:;")
