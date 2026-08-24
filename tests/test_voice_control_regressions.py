@@ -6,6 +6,7 @@ from app.modules.system.keyboard_module import (
     MAX_VIRTUAL_DESKTOPS,
     SystemKeyboardModule,
 )
+from app.modules.system.screen_recording_module import SystemScreenRecordingModule
 from app.modules.system.screenshot_module import SystemScreenshotModule
 
 
@@ -83,6 +84,23 @@ class VoiceControlRegressionTests(unittest.TestCase):
         open_folder.assert_called_once_with()
         self.assertEqual(response.text, "Открываю папку скриншотов.")
 
+    def test_recording_folder_phrase_has_safe_action(self):
+        module = SystemScreenRecordingModule()
+        phrase = "открой папку с записями экрана"
+        self.assertTrue(module.can_handle(phrase))
+        self.assertEqual(
+            module._find_action(phrase),
+            "screen_recording.open_folder",
+        )
+
+        with patch(
+            "app.modules.system.screen_recording_module.open_recording_directory"
+        ) as open_folder:
+            response = module.execute_action("screen_recording.open_folder", {})
+
+        open_folder.assert_called_once_with()
+        self.assertEqual(response.text, "Открываю папку записей экрана.")
+
     def test_new_actions_are_exposed_to_melissa_catalog(self):
         registry = create_default_registry()
         by_feature = {
@@ -94,6 +112,10 @@ class VoiceControlRegressionTests(unittest.TestCase):
         }
         self.assertIn("keyboard.desktop_number", by_feature["system.keyboard"])
         self.assertIn("screenshot.open_folder", by_feature["system.screenshot"])
+        self.assertIn(
+            "screen_recording.open_folder",
+            by_feature["system.screen_recording"],
+        )
 
 
 if __name__ == "__main__":
