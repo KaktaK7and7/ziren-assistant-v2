@@ -37,9 +37,13 @@ class SystemScreenRecordingModule(AssistantModule):
     plan = Plan.FREE
     default_trigger_groups = {
         "screen_recording.toggle": {
-            "display_name": "Начать или остановить запись экрана",
+            "display_name": "Передать Windows команду записи экрана",
             "triggers": RECORDING_TOGGLE_TRIGGERS,
-            "argument_hint": "Без аргументов. Использует системное сочетание Windows Game Bar Win+Alt+R.",
+            "argument_hint": (
+                "Без аргументов. Передаёт системное сочетание Win+Alt+R. "
+                "Game Bar сама решает, началась или остановилась запись; "
+                "Ziren пока не подтверждает состояние записи как факт."
+            ),
         },
         "screen_recording.open_folder": {
             "display_name": "Открыть папку записей экрана",
@@ -76,10 +80,25 @@ class SystemScreenRecordingModule(AssistantModule):
 
         normalized = self._normalize(text)
         if "останов" in normalized or "закончи" in normalized:
-            return ModuleResponse(text="Передала Windows команду остановить запись экрана.")
+            return ModuleResponse(
+                text=(
+                    "Передала Windows команду остановить запись экрана. "
+                    "Проверяй индикатор Game Bar: Ziren пока не подтверждает состояние записи автоматически."
+                )
+            )
         if "начни" in normalized or "запусти" in normalized:
-            return ModuleResponse(text="Передала Windows команду начать запись экрана.")
-        return ModuleResponse(text="Переключила запись экрана через Windows Game Bar.")
+            return ModuleResponse(
+                text=(
+                    "Передала Windows команду начать запись экрана. "
+                    "Проверяй индикатор Game Bar: Ziren пока не подтверждает состояние записи автоматически."
+                )
+            )
+        return ModuleResponse(
+            text=(
+                "Передала Windows системную команду переключить запись экрана. "
+                "Game Bar сама показывает, началась или остановилась запись."
+            )
+        )
 
     def _open_folder(self) -> ModuleResponse:
         try:
