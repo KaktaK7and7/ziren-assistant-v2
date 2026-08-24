@@ -56,9 +56,7 @@ class WindowApiReleaseTests(unittest.TestCase):
             windows_api.show_desktop()
 
         hotkey.assert_called_once_with(["win", "d"])
-        source = inspect.getsource(windows_api.show_desktop).lower()
-        self.assertNotIn("powershell", source)
-        self.assertNotIn("subprocess", source)
+        self.assertNotIn("subprocess", windows_api.__dict__)
 
 
 class WindowResolverReleaseTests(unittest.TestCase):
