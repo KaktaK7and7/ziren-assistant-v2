@@ -8,6 +8,7 @@ from collections.abc import Iterable
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 INPUT_KEYBOARD = 1
+HOTKEY_SETTLE_SECONDS = 0.04
 
 VK = {
     "backspace": 0x08,
@@ -224,6 +225,14 @@ def send_hotkey(keys: Iterable[str]) -> None:
                 _send_vk(code, key_up=True)
             except Exception:
                 pass
+
+    # Windows Shell actions such as virtual-desktop switching are asynchronous.
+    # SendInput returning success only proves that the keyboard packets entered
+    # the input stream, not that Explorer/VirtualDesktopManager already handled
+    # the chord. A tiny settle interval prevents repeated shell hotkeys from
+    # collapsing into an unreliable burst while remaining imperceptible for
+    # normal user commands.
+    time.sleep(HOTKEY_SETTLE_SECONDS)
 
 
 def type_unicode_text(text: str) -> None:
