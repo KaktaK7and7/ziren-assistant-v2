@@ -93,20 +93,7 @@ class SystemSocialMessagingModule(AssistantModule):
             self._listener_thread.start()
 
     def can_handle(self, text: str) -> bool:
-        normalized = self._normalize(text)
-        return bool(
-            normalized.startswith("напиши ")
-            or normalized.startswith("отправь сообщение ")
-            or "скриншот" in normalized and "отправ" in normalized
-            or re.search(r"\bскрин\b", normalized) and "отправ" in normalized
-            or (
-                "отправ" in normalized
-                and (
-                    "скопирован" in normalized
-                    or "то что скопировано" in normalized
-                )
-            )
-        )
+        return self._match_action_trigger(text) is not None
 
     def handle(self, text: str) -> ModuleResponse:
         try:
@@ -205,71 +192,85 @@ class SystemSocialMessagingModule(AssistantModule):
 
     def _parse_command(self, text: str) -> SocialCommand:
         source = " ".join(str(text or "").split()).strip()
-        normalized = self._normalize(source)
+        matched = self._match_action_trigger(source)
+        if matched is None:
+            raise SocialApiError("Не поняла команду сообщения")
 
-        if (
-            "скриншот" in normalized
-            or re.search(r"\bскрин\b", normalized)
-        ) and "отправ" in normalized:
-            recipient = self._extract_after_send(source)
+        action_id, end_word_index = matched
+        source_words = source.split()
+        remainder = " ".join(source_words[end_word_index:]).strip(" ,.!?:;-")
+
+        if action_id == "social.message.screenshot":
+            recipient = self._clean_recipient_tail(remainder)
+            if not recipient:
+                raise SocialApiError("Не услышала, кому отправить скриншот")
             return SocialCommand(
                 kind="screenshot",
                 friend=self._resolve_recipient_only(recipient),
             )
 
-        if "отправ" in normalized and (
-            "скопирован" in normalized
-            or "то что скопировано" in normalized
-        ):
-            recipient = self._extract_after_clipboard_marker(source)
+        if action_id == "social.message.clipboard":
+            recipient = self._clean_recipient_tail(remainder)
+            if not recipient:
+                raise SocialApiError("Не услышала, кому отправить скопированный текст")
             return SocialCommand(
                 kind="clipboard",
                 friend=self._resolve_recipient_only(recipient),
             )
 
-        remainder = source
-        for prefix in ("отправь сообщение", "напиши"):
-            if self._normalize(source).startswith(self._normalize(prefix) + " "):
-                words = source.split()
-                remainder = " ".join(words[len(prefix.split()):]).strip()
-                break
+        if not remainder:
+            raise SocialApiError("Скажи имя друга и текст сообщения")
 
         friend, body = self._resolve_friend_and_body(remainder)
-
         if not body:
             raise SocialApiError("Скажи, что написать другу")
-
         return SocialCommand(kind="text", friend=friend, body=body)
 
-    def _extract_after_send(self, source: str) -> str:
-        match = re.search(r"\bотправ\w*\b\s+(.+)$", source, flags=re.IGNORECASE)
-        if not match:
-            raise SocialApiError("Не услышала, кому отправить скриншот")
+    def _match_action_trigger(self, source: str) -> tuple[str, int] | None:
+        source_words = str(source or "").split()
+        source_tokens = [self._normalize_word(word) for word in source_words]
+        matches: list[tuple[int, int, str, int]] = []
 
-        recipient = match.group(1).strip(" ,.!?:;-")
+        for action_id in self.default_trigger_groups:
+            for trigger in self.get_action_triggers(action_id):
+                trigger_words = str(trigger or "").split()
+                trigger_tokens = [self._normalize_word(word) for word in trigger_words]
+                trigger_tokens = [word for word in trigger_tokens if word]
+                if not trigger_tokens:
+                    continue
+
+                width = len(trigger_tokens)
+                for start in range(0, len(source_tokens) - width + 1):
+                    if source_tokens[start : start + width] != trigger_tokens:
+                        continue
+                    # Start-of-command matches outrank incidental mentions. The
+                    # global Snake router then compares this trigger length with
+                    # other modules, so "напиши здесь" beats broad "напиши".
+                    prefix_bonus = 20_000 if start == 0 else 10_000
+                    score = prefix_bonus + len(" ".join(trigger_tokens))
+                    matches.append((score, width, action_id, start + width))
+
+        if not matches:
+            return None
+
+        _, _, action_id, end_word_index = max(matches, key=lambda item: item[0])
+        return action_id, end_word_index
+
+    @staticmethod
+    def _normalize_word(value: str) -> str:
+        normalized = str(value or "").lower().replace("ё", "е")
+        return re.sub(r"[^\w]+", "", normalized, flags=re.UNICODE)
+
+    @staticmethod
+    def _clean_recipient_tail(value: str) -> str:
+        recipient = str(value or "").strip(" ,.!?:;-")
         recipient = re.sub(
-            r"^(?:скриншот|скрин)(?:\s+экрана)?\s+",
+            r"^(?:его|это|для|к|другу|пользователю)\s+",
             "",
             recipient,
             flags=re.IGNORECASE,
-        ).strip()
-
-        if not recipient:
-            raise SocialApiError("Не услышала, кому отправить скриншот")
-        return recipient
-
-    def _extract_after_clipboard_marker(self, source: str) -> str:
-        patterns = [
-            r"\bскопирован(?:ное|ный)\s+(?:сообщение|текст)\b\s+(.+)$",
-            r"\bто\s*,?\s*что\s+скопировано\b\s+(.+)$",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, source, flags=re.IGNORECASE)
-            if match:
-                return match.group(1).strip(" ,.!?:;-")
-
-        raise SocialApiError("Не услышала, кому отправить скопированный текст")
+        )
+        return recipient.strip(" ,.!?:;-")
 
     def _resolve_recipient_only(self, spoken: str) -> SocialFriend:
         recipient = re.sub(
