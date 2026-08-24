@@ -90,8 +90,14 @@ class SystemClipboardModule(AssistantModule):
 
         try:
             write_text(value)
+            verified = read_text()
         except ClipboardError as error:
             return ModuleResponse(text=f"Не смогла скопировать текст: {error}")
+
+        if verified != value:
+            return ModuleResponse(
+                text="Windows приняла запись, но содержимое буфера не совпало. Не считаю копирование успешным."
+            )
 
         return ModuleResponse(text="Скопировала текст в буфер обмена.")
 
