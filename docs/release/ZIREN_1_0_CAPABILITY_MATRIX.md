@@ -27,7 +27,7 @@ Status legend:
 | Recording | start/stop screen recording | 🟡 NEEDS FIX | Game Bar state is not yet verifiable; Ziren must only report command delivery until state-aware backend exists |
 | Recording | open recordings folder | ✅ RELEASE READY | safe Videos/Captures action covered; final Windows smoke-test |
 | Audio | volume / mute | 🟡 NEEDS FIX | pycaw device smoke-test + unavailable-device honesty |
-| Display | brightness | 🟡 NEEDS FIX | DDC/CI monitor support detection + per-monitor hardware test |
+| Display | brightness | ✅ RELEASE READY | DDC/CI SetMonitorBrightness is followed by bounded read-back verification; final supported/unsupported physical-monitor smoke-test |
 | Displays | move window between monitors | ✅ RELEASE READY | second-monitor preflight + foreground HWND + `MonitorFromWindow` post-action verification covered; final physical multi-monitor smoke-test |
 | System | GPU temperature | ✅ RELEASE READY | concise numeric response + nvidia-smi absence path covered |
 | System | CPU temperature | 🔴 NOT SHIPPING | ship only with reliable sensor backend |
@@ -63,6 +63,7 @@ Status legend:
 - Screenshot JPEG validation, atomic write and on-disk verification.
 - Recording response contract explicitly forbidding unverified start/stop claims.
 - Multi-monitor move verification via actual monitor-handle change.
+- DDC/CI brightness read-back verification; a successful setter call alone is not treated as success.
 - Windows Known Folder API resolution and download executable/partial-file safety tests.
 
 ## Next manual smoke batch
