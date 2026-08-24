@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from app.api.social_client import SocialApiError
 from app.features.feature_gate import FeatureGate
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
@@ -91,7 +92,13 @@ class SocialCustomTriggerTests(unittest.TestCase):
     def _module(action_id: str, custom_trigger: str):
         client = Mock()
         friend = SimpleNamespace(id=7, voice_name="Диана", username="Diana")
-        client.resolve_friend.return_value = friend
+
+        def resolve_friend(spoken: str):
+            if spoken.strip().lower() == "диане":
+                return friend
+            raise SocialApiError("friend not found")
+
+        client.resolve_friend.side_effect = resolve_friend
         module = SystemSocialMessagingModule(client=client, start_inbox_listener=False)
         trigger_store = Mock(spec=TriggerStore)
 
