@@ -57,6 +57,46 @@ SMOKE_CASES: tuple[SmokeCase, ...] = (
         ),
     ),
     SmokeCase(
+        "keyboard.unicode.win32",
+        "Keyboard",
+        "Unicode input in a standard Win32 edit control",
+        (
+            "Open a normal Windows application that uses a standard editable text control.",
+            "Focus the edit control and ask Ziren to type: Привет, Ziren — ёжик №7 ✓",
+            "PASS only if the exact Unicode text appears and focus stays in the intended field.",
+        ),
+    ),
+    SmokeCase(
+        "keyboard.function_keys",
+        "Keyboard",
+        "F1–F12 voice addressability",
+        (
+            "Use a harmless application where function-key input can be observed without risking data loss.",
+            "Run the Snake F1–F12 voice commands and verify each requested function key is the one delivered.",
+            "Also test one Melissa natural-language F-key request and verify it is bounded to F1–F12.",
+        ),
+    ),
+    SmokeCase(
+        "keyboard.hotkeys",
+        "Keyboard",
+        "Curated Ctrl / Alt / Win hotkeys",
+        (
+            "Use disposable text and normal application windows.",
+            "Verify representative Ctrl shortcuts (select/copy/paste/undo), Alt+Tab, Win+D and task view.",
+            "PASS only if no modifier remains stuck and rapid commands do not lose the intended Shell action.",
+        ),
+    ),
+    SmokeCase(
+        "clipboard.text",
+        "Clipboard",
+        "Clipboard write / read / paste path",
+        (
+            "Ask Ziren to put a distinctive Unicode phrase into the clipboard.",
+            "Ask Ziren to read it back, then paste it into Notepad.",
+            "PASS only if the exact clipboard value survives write, read-back and paste; social send must not steal the local clipboard command.",
+        ),
+    ),
+    SmokeCase(
         "windows.common_apps",
         "Windows",
         "Focus / minimize / maximize / restore common windows",
@@ -64,6 +104,16 @@ SMOKE_CASES: tuple[SmokeCase, ...] = (
             "Open Explorer, Notepad and a Chromium browser at the same time.",
             "Test focus, minimize, maximize and restore against each app by spoken name.",
             "FAIL on wrong-window selection, false success or ambiguous selection that performs an action.",
+        ),
+    ),
+    SmokeCase(
+        "windows.close",
+        "Windows",
+        "Graceful WM_CLOSE against normal applications",
+        (
+            "Open disposable Explorer and Notepad windows with no unsaved important work.",
+            "Ask Ziren to close each window by name.",
+            "PASS only if the normal application close path is used, ambiguity performs no action, and Ziren never force-kills the process.",
         ),
     ),
     SmokeCase(
@@ -158,6 +208,16 @@ SMOKE_CASES: tuple[SmokeCase, ...] = (
         ),
     ),
     SmokeCase(
+        "files.latest_download",
+        "Files",
+        "Reveal/open latest downloaded file safely",
+        (
+            "Place a harmless supported document in Downloads and make sure no partial .crdownload/.part file is newer.",
+            "Ask Ziren to reveal the latest download, then open it.",
+            "PASS only if the expected safe file is selected/opened and executable or unknown types are refused.",
+        ),
+    ),
+    SmokeCase(
         "power.lock",
         "Power",
         "Lock workstation",
@@ -184,9 +244,20 @@ SMOKE_CASES: tuple[SmokeCase, ...] = (
         "Power",
         "Restart confirmation path",
         (
-            "Run this only after all other smoke cases and save all work.",
+            "Run this near the end of the smoke batch and save all work.",
             "Request restart and verify nothing happens before a separate confirmation.",
             "Confirm within the allowed window and verify Windows restarts normally.",
+        ),
+        session_ending=True,
+    ),
+    SmokeCase(
+        "power.shutdown",
+        "Power",
+        "Shutdown confirmation path",
+        (
+            "Run this last and save all work before continuing.",
+            "Request shutdown and verify nothing happens before a separate confirmation.",
+            "Confirm within the allowed window and verify Windows shuts down normally.",
         ),
         session_ending=True,
     ),
@@ -308,7 +379,7 @@ def main() -> int:
     parser.add_argument(
         "--include-session-ending",
         action="store_true",
-        help="Include lock/sleep/restart verification cases. Hidden by default.",
+        help="Include lock/sleep/restart/shutdown verification cases. Hidden by default.",
     )
     parser.add_argument(
         "--list",
