@@ -22,7 +22,7 @@ Status legend:
 | Screenshots | capture screenshot | 🟡 NEEDS FIX | save file + announce success only after actual save |
 | Screenshots | open screenshot folder | 🟡 NEEDS FIX | fixed Pictures/Ziren/Screenshots path smoke-test |
 | Recording | start/stop screen recording | 🟡 NEEDS FIX | Game Bar availability detection + actual output file check |
-| Recording | open recordings folder | 🔴 NOT SHIPPING | implement fixed destination resolver |
+| Recording | open recordings folder | 🟡 NEEDS FIX | safe Videos/Captures action added; final Windows smoke-test required |
 | Audio | volume / mute | 🟡 NEEDS FIX | pycaw device smoke-test + unavailable-device honesty |
 | Display | brightness | 🟡 NEEDS FIX | DDC/CI monitor support detection + per-monitor test |
 | Displays | move window between monitors | 🟡 NEEDS FIX | multi-monitor smoke-test |
