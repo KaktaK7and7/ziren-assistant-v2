@@ -79,6 +79,8 @@ class TriggerStore:
                 groups[LEGACY_ACTION_ID] = {
                     "display_name": "Общие триггеры",
                     "triggers": legacy_triggers,
+                    "melissa_semantic": False,
+                    "snake_triggers": True,
                 }
 
             return groups
@@ -93,7 +95,9 @@ class TriggerStore:
             if action_id not in default_groups:
                 continue
 
+            current = groups[action_id]
             groups[action_id] = {
+                **current,
                 "display_name": str(
                     default_groups[action_id].get("display_name", action_id)
                 ),
@@ -123,6 +127,8 @@ class TriggerStore:
             groups[action_id] = {
                 "display_name": str(group.get("display_name", action_id)),
                 "triggers": self._normalize_triggers(group.get("triggers", [])),
+                "melissa_semantic": group.get("melissa_semantic", True) is not False,
+                "snake_triggers": group.get("snake_triggers", True) is not False,
             }
 
         return groups
