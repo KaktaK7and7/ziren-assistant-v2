@@ -3,8 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
+
+# `python scripts/export_web_capabilities.py` makes `scripts/` the first import
+# root. Add the repository root explicitly so the CLI works the same way in a
+# local checkout and in GitHub Actions instead of relying on an ambient
+# PYTHONPATH.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from app.config.settings import DESKTOP_TOKEN_ENV
 from app.modules.registry import create_default_registry
