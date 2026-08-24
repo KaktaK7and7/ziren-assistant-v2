@@ -24,7 +24,13 @@ from app.modules.system.window_control_module import SystemWindowControlModule
 from app.settings.trigger_store import TriggerStore
 
 
-MAX_AI_ACTIONS_PER_FEATURE = 64
+# Keep this aligned with the auth-site gateway and AI-service classifier. A
+# smaller bounded catalog is cheaper and more accurate than silently allowing
+# one layer to truncate a feature after Core has already advertised it.
+MAX_AI_ACTIONS_PER_FEATURE = 40
+MAX_AI_ARGUMENT_HINT_LENGTH = 160
+MAX_AI_VOICE_EXAMPLES_PER_ACTION = 4
+MAX_AI_VOICE_EXAMPLE_LENGTH = 100
 
 
 class ModuleRegistry:
@@ -97,24 +103,19 @@ class ModuleRegistry:
                 if group.get("melissa_semantic", True) is False:
                     continue
 
-                argument_hint = str(group.get("argument_hint", "")).strip()
-                trigger_examples = [
-                    " ".join(trigger.split())
+                voice_examples = [
+                    " ".join(trigger.split())[:MAX_AI_VOICE_EXAMPLE_LENGTH]
                     for trigger in group.get("triggers", [])
                     if isinstance(trigger, str) and trigger.strip()
-                ][:4]
-                if trigger_examples:
-                    examples = "; ".join(trigger_examples)
-                    argument_hint = (
-                        f"{argument_hint} Голосовые примеры: {examples}."
-                        if argument_hint
-                        else f"Голосовые примеры: {examples}."
-                    )
+                ][:MAX_AI_VOICE_EXAMPLES_PER_ACTION]
 
                 actions.append({
                     "action_id": action_id,
                     "display_name": str(group.get("display_name", action_id)),
-                    "argument_hint": argument_hint[:320],
+                    "argument_hint": str(group.get("argument_hint", "")).strip()[
+                        :MAX_AI_ARGUMENT_HINT_LENGTH
+                    ],
+                    "voice_examples": voice_examples,
                 })
 
             if actions:
