@@ -57,6 +57,22 @@ class VoiceControlRegressionTests(unittest.TestCase):
                     self.assertEqual(action[0], f"f{number}")
                     self.assertEqual(action[1], [f"f{number}"])
 
+    def test_melissa_function_key_action_is_bounded_to_f1_f12(self):
+        module = SystemKeyboardModule()
+        with patch("app.modules.system.keyboard_module.press_key") as press_key:
+            response = module.execute_action("keyboard.function_key", {"target": "F12"})
+
+        self.assertIsNotNone(response)
+        self.assertEqual(response.text, "Нажала F12.")
+        press_key.assert_called_once_with("f12")
+
+        with patch("app.modules.system.keyboard_module.press_key") as press_key:
+            response = module.execute_action("keyboard.function_key", {"target": 13})
+
+        self.assertIsNotNone(response)
+        self.assertIn("F1 до F12", response.text)
+        press_key.assert_not_called()
+
     def test_virtual_desktop_parser_understands_numbered_desktops(self):
         module = SystemKeyboardModule()
         cases = {
@@ -148,8 +164,9 @@ class VoiceControlRegressionTests(unittest.TestCase):
         self.assertIn("keyboard.close_desktop", keyboard_actions)
         self.assertIn("keyboard.home", keyboard_actions)
         self.assertIn("keyboard.pagedown", keyboard_actions)
-        self.assertIn("keyboard.f1", keyboard_actions)
-        self.assertIn("keyboard.f12", keyboard_actions)
+        self.assertIn("keyboard.function_key", keyboard_actions)
+        self.assertNotIn("keyboard.f1", keyboard_actions)
+        self.assertNotIn("keyboard.f12", keyboard_actions)
         self.assertIn("screenshot.open_folder", by_feature["system.screenshot"])
         self.assertIn(
             "screen_recording.open_folder",
