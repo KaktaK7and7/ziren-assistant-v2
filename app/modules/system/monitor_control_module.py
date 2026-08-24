@@ -5,29 +5,29 @@ from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
-from app.pc_control.windows_input import WindowsInputError, send_hotkey
+from app.pc_control.monitors import MonitorControlError, move_active_window
 
 
 ACTIONS = {
     "monitor.window_left": {
-        "keys": ["win", "shift", "left"],
+        "direction": "left",
         "display_name": "Перенести активное окно на монитор слева",
         "triggers": [
             "перенеси окно на левый монитор",
             "перемести окно на монитор слева",
             "окно на левый монитор",
         ],
-        "response": "Переношу активное окно на монитор слева.",
+        "response": "Перенесла активное окно на монитор слева.",
     },
     "monitor.window_right": {
-        "keys": ["win", "shift", "right"],
+        "direction": "right",
         "display_name": "Перенести активное окно на монитор справа",
         "triggers": [
             "перенеси окно на правый монитор",
             "перемести окно на монитор справа",
             "окно на правый монитор",
         ],
-        "response": "Переношу активное окно на монитор справа.",
+        "response": "Перенесла активное окно на монитор справа.",
     },
 }
 
@@ -40,7 +40,10 @@ class SystemMonitorControlModule(AssistantModule):
         action_id: {
             "display_name": action["display_name"],
             "triggers": action["triggers"],
-            "argument_hint": "Без аргументов. Действие применяется к активному окну Windows.",
+            "argument_hint": (
+                "Без аргументов. Действие применяется к активному окну Windows "
+                "и считается успешным только после подтверждения смены монитора."
+            ),
         }
         for action_id, action in ACTIONS.items()
     }
@@ -66,8 +69,8 @@ class SystemMonitorControlModule(AssistantModule):
     def _execute(self, action_id: str) -> ModuleResponse:
         action = ACTIONS[action_id]
         try:
-            send_hotkey(action["keys"])
-        except WindowsInputError as error:
+            move_active_window(action["direction"])
+        except MonitorControlError as error:
             return ModuleResponse(text=f"Не смогла перенести окно: {error}")
         return ModuleResponse(text=action["response"])
 
