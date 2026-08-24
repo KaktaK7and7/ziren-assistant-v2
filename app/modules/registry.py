@@ -24,6 +24,9 @@ from app.modules.system.window_control_module import SystemWindowControlModule
 from app.settings.trigger_store import TriggerStore
 
 
+MAX_AI_ACTIONS_PER_FEATURE = 64
+
+
 class ModuleRegistry:
     def __init__(self, trigger_store: TriggerStore | None = None) -> None:
         self._modules: list[AssistantModule] = []
@@ -117,7 +120,7 @@ class ModuleRegistry:
                 result.append({
                     "feature_id": module.feature_id,
                     "display_name": module.display_name,
-                    "actions": actions[:40],
+                    "actions": actions[:MAX_AI_ACTIONS_PER_FEATURE],
                 })
 
         return result
