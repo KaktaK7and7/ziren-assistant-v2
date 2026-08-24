@@ -36,5 +36,30 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
+      - name: Generate website capability manifest
+        run: python scripts/export_web_capabilities.py --output build/assistant-capabilities.json
+
+      - name: Validate generated capability manifest
+        shell: pwsh
+        run: |
+          $manifest = Get-Content build/assistant-capabilities.json -Raw | ConvertFrom-Json
+          if ($manifest.generated_from -ne "ziren-assistant-v2:ModuleRegistry") {
+            throw "Capability manifest is not sourced from ModuleRegistry"
+          }
+          if (-not $manifest.features -or $manifest.features.Count -lt 1) {
+            throw "Capability manifest is empty"
+          }
+          if ($manifest.features.feature_id -contains "system.test") {
+            throw "Internal test capability leaked into public manifest"
+          }
+
+      - name: Upload website capability manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: ziren-web-capabilities
+          path: build/assistant-capabilities.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Compile Python sources
-        run: python -m compileall -q app tests
+        run: python -m compileall -q app tests scripts
