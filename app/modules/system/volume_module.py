@@ -8,6 +8,9 @@ from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
 
 
+VOLUME_VERIFY_TOLERANCE_PERCENT = 2
+
+
 class SystemVolumeModule(AssistantModule):
     feature_id = "system.volume"
     display_name = "Управление громкостью"
@@ -73,34 +76,34 @@ class SystemVolumeModule(AssistantModule):
             volume = self._get_volume()
 
             if action_id == "volume.mute":
-                volume.SetMute(1, None)
+                self._set_mute(volume, True)
                 return ModuleResponse(text="Звук выключен.")
 
             if action_id == "volume.unmute":
-                volume.SetMute(0, None)
+                self._set_mute(volume, False)
                 return ModuleResponse(text="Звук включён.")
 
             if action_id == "volume.set":
                 if percent is None:
                     return ModuleResponse(text="Укажи громкость от 0 до 100 процентов.")
-                self._set_volume_percent(volume, percent)
+                actual = self._set_volume_percent(volume, percent)
                 return ModuleResponse(
-                    text=f"Громкость установлена на {percent} процентов."
+                    text=f"Громкость установлена на {actual} процентов."
                 )
 
             current = self._get_current_percent(volume)
             if action_id == "volume.up":
-                new_value = min(100, current + 10)
-                self._set_volume_percent(volume, new_value)
+                requested = min(100, current + 10)
+                actual = self._set_volume_percent(volume, requested)
                 return ModuleResponse(
-                    text=f"Сделала громче. Сейчас {new_value} процентов."
+                    text=f"Сделала громче. Сейчас {actual} процентов."
                 )
 
             if action_id == "volume.down":
-                new_value = max(0, current - 10)
-                self._set_volume_percent(volume, new_value)
+                requested = max(0, current - 10)
+                actual = self._set_volume_percent(volume, requested)
                 return ModuleResponse(
-                    text=f"Сделала тише. Сейчас {new_value} процентов."
+                    text=f"Сделала тише. Сейчас {actual} процентов."
                 )
         except Exception as error:
             return ModuleResponse(
@@ -127,6 +130,8 @@ class SystemVolumeModule(AssistantModule):
 
     def _get_volume(self):
         speakers = AudioUtilities.GetSpeakers()
+        if speakers is None:
+            raise RuntimeError("Windows не вернула активное устройство вывода звука")
         endpoint = self._resolve_endpoint(speakers)
 
         interface = endpoint.Activate(
@@ -134,8 +139,13 @@ class SystemVolumeModule(AssistantModule):
             CLSCTX_ALL,
             None,
         )
+        if interface is None:
+            raise RuntimeError("Не удалось открыть системный audio endpoint")
 
-        return interface.QueryInterface(IAudioEndpointVolume)
+        volume = interface.QueryInterface(IAudioEndpointVolume)
+        if volume is None:
+            raise RuntimeError("Не удалось получить управление системной громкостью")
+        return volume
 
     def _resolve_endpoint(self, speakers: Any) -> Any:
         if hasattr(speakers, "Activate"):
@@ -160,13 +170,33 @@ class SystemVolumeModule(AssistantModule):
         )
 
     def _get_current_percent(self, volume) -> int:
-        scalar = volume.GetMasterVolumeLevelScalar()
-        return round(float(scalar) * 100)
+        scalar = float(volume.GetMasterVolumeLevelScalar())
+        if not 0.0 <= scalar <= 1.0:
+            raise RuntimeError("Windows вернула некорректный уровень громкости")
+        return round(scalar * 100)
 
-    def _set_volume_percent(self, volume, percent: int) -> None:
-        percent = max(0, min(100, percent))
+    def _set_mute(self, volume, muted: bool) -> None:
+        expected = 1 if muted else 0
+        volume.SetMute(expected, None)
+        actual = int(volume.GetMute())
+        if actual != expected:
+            state = "mute" if muted else "unmute"
+            raise RuntimeError(f"Windows не подтвердила состояние {state}")
+
+    def _set_volume_percent(self, volume, percent: int) -> int:
+        requested = max(0, min(100, percent))
+        # Setting a non-zero volume should make sound audible. At zero we keep
+        # the endpoint unmuted as well so future volume-up behaves predictably.
         volume.SetMute(0, None)
-        volume.SetMasterVolumeLevelScalar(percent / 100, None)
+        volume.SetMasterVolumeLevelScalar(requested / 100, None)
+        actual = self._get_current_percent(volume)
+        if abs(actual - requested) > VOLUME_VERIFY_TOLERANCE_PERCENT:
+            raise RuntimeError(
+                f"Windows не подтвердила громкость {requested} процентов; сейчас {actual}"
+            )
+        if int(volume.GetMute()) != 0:
+            raise RuntimeError("Windows оставила системный звук в mute")
+        return actual
 
     def _extract_percent(self, text: str) -> int | None:
         digit_match = re.search(r"\b(\d{1,3})\b", text)
