@@ -44,7 +44,7 @@ class MediaReleaseTests(unittest.TestCase):
         module = SystemMediaControlModule(resolver=resolver)
 
         class FakeTriggerStore:
-            def get_feature_groups(self, feature_id, defaults):
+            def get_groups(self, feature_id, defaults):
                 groups = {
                     action_id: dict(group, triggers=list(group.get("triggers", [])))
                     for action_id, group in defaults.items()
