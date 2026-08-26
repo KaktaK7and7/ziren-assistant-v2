@@ -102,7 +102,9 @@ class AppLauncher:
     def _launch_system(self, target: AppTarget) -> None:
         if target.launch_uri and target.launch_uri.startswith(("http://", "https://")):
             self._log_normal_attempt(target, target.launch_uri)
-            webbrowser.open(target.launch_uri)
+            opened = bool(webbrowser.open(target.launch_uri))
+            if not opened:
+                raise RuntimeError("Windows не подтвердила открытие ссылки приложения в браузере.")
             return
 
         if not target.path:
