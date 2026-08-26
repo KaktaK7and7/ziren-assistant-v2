@@ -11,6 +11,10 @@ Status legend:
 
 | Area | Capability | Status | Release gate |
 | --- | --- | --- | --- |
+| Apps | Launch known app / game | ✅ RELEASE READY | AppResolver resolves only known targets; `.exe`/`.lnk` validation, `shell=False`, elevation result checks and URL browser-handoff verification covered; final Notepad/Discord/Steam smoke |
+| Browser | Tab/navigation hotkeys | ✅ RELEASE READY | foreground process must be an allowlisted browser before any hotkey; only whitelisted hotkeys are sent and response reports delivery rather than unverified tab state; final Chromium/Firefox smoke |
+| Media | Global play/pause/next/previous/stop | 🟡 NEEDS FIX | Windows media-key delivery is truthful, but Core cannot yet verify that an active media session changed playback state; Spotify/browser-media smoke and state-aware backend decision required |
+| Media | Open saved music preset | ✅ RELEASE READY | preset must resolve locally and browser handoff must return success; no autoplay claim; final browser smoke |
 | Keyboard | Unicode text input | 🟡 NEEDS FIX | SendInput Unicode path is bounded and truthful, but Notepad + Chromium + standard Win32 field smoke-test is still required |
 | Keyboard | Enter / Tab / Escape / Backspace / Delete / arrows / Home / End / Page Up/Down | ✅ RELEASE READY | Vosk alias matrix + native SendInput regressions covered; final real-app smoke-test |
 | Keyboard | F1–F12 | ✅ RELEASE READY | Snake keeps explicit F1–F12 triggers; Melissa uses bounded `keyboard.function_key` 1..12; final real-app smoke-test |
@@ -40,7 +44,7 @@ Status legend:
 | Social | direct text message | 🟡 NEEDS FIX | accepted-friend + ambiguity safety regression |
 | Social | screenshot/clipboard send | 🟡 NEEDS FIX | accepted-friend + binary upload regression |
 | Melissa | semantic action selection | ✅ RELEASE READY | Core → auth-site → AI-service catalog is bounded to 40 actions/feature, structured voice examples are preserved, fake chat fallback is blocked; final staging classifier smoke-test |
-| Snake | custom trigger execution | ✅ RELEASE READY | TriggerStore-backed action groups are used by trigger-backed modules, router picks the most-specific matching trigger, and scheduler/social/file/keyboard custom-route regressions are covered; final user-created-trigger Windows smoke-test |
+| Snake | custom trigger execution | ✅ RELEASE READY | TriggerStore-backed action groups are used by trigger-backed modules, router picks the most-specific matching trigger, and scheduler/social/file/keyboard/browser/media custom-route regressions are covered; final user-created-trigger Windows smoke-test |
 
 ## 1.0 hard rules
 
@@ -56,9 +60,14 @@ Status legend:
 10. Voice/Vosk examples travel as structured `voice_examples`; do not hide them inside free-form prompt text.
 11. The public website capability manifest must come from the release candidate Core `ModuleRegistry`, not from a manually maintained list.
 12. Session-ending manual smoke cases are opt-in and must never be executed automatically by CI or the smoke recorder.
+13. Browser hotkeys require a verified foreground browser process; generic hotkeys must never be sprayed into an unrelated active application.
+14. Global media keys are delivery-only until a state-aware media-session backend verifies playback state.
 
 ## Automated P0 evidence added in the release branch
 
+- App Launcher validates executable/shortcut targets, uses `shell=False` for process launch, checks elevation handoff and rejects failed browser URL handoff.
+- Browser control verifies the foreground process against an allowlist before sending a whitelisted hotkey and never claims unverified tab/navigation state.
+- Media control reports global media-key delivery rather than unverified playback state; saved presets require a confirmed browser handoff and do not claim autoplay.
 - Keyboard/Vosk alias matrix, bounded Melissa F-key action and route-boundary regression.
 - Native SendInput layout plus a short post-hotkey settle interval for asynchronous Windows Shell actions.
 - Power request/confirmation/expiry/cancel safety tests.
@@ -101,20 +110,23 @@ python scripts/windows_release_smoke.py --include-session-ending
 
 ## Next manual smoke batch
 
-1. Unicode typing in Notepad, Chromium and a standard Win32 edit control.
-2. F1–F12 voice addressability and representative Ctrl/Alt/Win hotkeys with no stuck modifiers.
-3. Clipboard write → exact read-back → paste with a Unicode sample.
-4. Window focus/minimize/maximize/restore across Explorer, Notepad and Chromium, plus graceful WM_CLOSE.
-5. Virtual desktop transitions and deterministic address-by-number behavior: 1→2→1→3→1.
-6. Real screenshot capture + folder open on the target Windows 10 machine.
-7. Game Bar recording behavior; do not promote start/stop until state can be verified.
-8. Reminder/alarm delivery across Core restart and while TTS is busy; verify audible alarm and cancellation.
-9. Volume/mute against the real default endpoint.
-10. DDC/CI brightness on supported and unsupported displays.
-11. Physical two-monitor left/right move verification when two monitors are available.
-12. OneDrive/redirection test for Desktop/Documents/Pictures and safe reveal/open of the latest download.
-13. At least one user-created trigger in keyboard/files/scheduler/social to confirm editor → TriggerStore → runtime execution on the target machine.
-14. Staging Melissa smoke: natural-language commands for keyboard, windows, scheduler, brightness and clipboard all select only catalog actions.
-15. After saving all work, explicit lock/sleep/restart/shutdown confirmation-path smoke using `--include-session-ending`.
+1. Launch known Notepad/Discord/Steam targets and verify resolver ambiguity never opens the wrong app.
+2. With Chromium/Firefox foreground, test new/close/restore tab, back/forward/reload; repeat one command with Notepad foreground and verify Ziren blocks it.
+3. Test global media keys against a real Spotify/browser media session and confirm Ziren only reports delivery when state cannot be verified; test a saved preset and confirm no autoplay claim.
+4. Unicode typing in Notepad, Chromium and a standard Win32 edit control.
+5. F1–F12 voice addressability and representative Ctrl/Alt/Win hotkeys with no stuck modifiers.
+6. Clipboard write → exact read-back → paste with a Unicode sample.
+7. Window focus/minimize/maximize/restore across Explorer, Notepad and Chromium, plus graceful WM_CLOSE.
+8. Virtual desktop transitions and deterministic address-by-number behavior: 1→2→1→3→1.
+9. Real screenshot capture + folder open on the target Windows 10 machine.
+10. Game Bar recording behavior; do not promote start/stop until state can be verified.
+11. Reminder/alarm delivery across Core restart and while TTS is busy; verify audible alarm and cancellation.
+12. Volume/mute against the real default endpoint.
+13. DDC/CI brightness on supported and unsupported displays.
+14. Physical two-monitor left/right move verification when two monitors are available.
+15. OneDrive/redirection test for Desktop/Documents/Pictures and safe reveal/open of the latest download.
+16. At least one user-created trigger in keyboard/files/scheduler/social/browser/media to confirm editor → TriggerStore → runtime execution on the target machine.
+17. Staging Melissa smoke: natural-language commands for keyboard, windows, scheduler, brightness and clipboard all select only catalog actions.
+18. After saving all work, explicit lock/sleep/restart/shutdown confirmation-path smoke using `--include-session-ending`.
 
 The matrix should be updated after every Windows smoke-test. No P0 release candidate is approved while any advertised capability remains 🔴 or has an unresolved destructive-action bug.
