@@ -37,6 +37,36 @@ class SmokeResult:
 
 SMOKE_CASES: tuple[SmokeCase, ...] = (
     SmokeCase(
+        "apps.launch_known",
+        "Apps",
+        "Launch known applications and reject ambiguous targets",
+        (
+            "Use harmless known targets such as Notepad, Discord and one configured game/shortcut.",
+            "Ask Snake and Melissa to open each target, and deliberately try one ambiguous spoken name if available.",
+            "PASS only if the intended target launches, ambiguity asks for clarification instead of opening the wrong app, and URL/system targets report failure when Windows rejects the handoff.",
+        ),
+    ),
+    SmokeCase(
+        "browser.foreground_guard",
+        "Browser",
+        "Browser hotkeys stay inside a foreground browser",
+        (
+            "Focus Chromium/Firefox and test new/close/restore tab, back/forward and reload.",
+            "Then focus Notepad and repeat one browser command such as close tab.",
+            "PASS only if browser commands are delivered with a browser foreground and are blocked before SendInput when another application is active; Ziren must not claim the resulting tab state as verified.",
+        ),
+    ),
+    SmokeCase(
+        "media.delivery",
+        "Media",
+        "Global media-key delivery and saved preset handoff",
+        (
+            "Start a harmless Spotify or browser media session and test play/pause, next and previous through Ziren.",
+            "Verify Ziren describes global media-key delivery rather than claiming playback state it cannot read back.",
+            "Open one saved music preset and verify the browser handoff succeeds; Ziren must not claim that playback started automatically.",
+        ),
+    ),
+    SmokeCase(
         "keyboard.unicode.notepad",
         "Keyboard",
         "Unicode input in Notepad",
