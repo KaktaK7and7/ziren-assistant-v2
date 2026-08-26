@@ -48,8 +48,10 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,
-    disable_windowed_traceback=False,
+    # Keep the sidecar as a console subsystem binary so release self-tests and
+    # crash diagnostics have reliable stdout/stderr and exit codes. The Tauri
+    # parent suppresses the console window in production with CREATE_NO_WINDOW.
+    console=True,
 )
 
 coll = COLLECT(
