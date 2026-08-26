@@ -66,7 +66,7 @@ class BrowserReleaseTests(unittest.TestCase):
         module = SystemBrowserControlModule()
 
         class FakeTriggerStore:
-            def get_feature_groups(self, feature_id, defaults):
+            def get_groups(self, feature_id, defaults):
                 groups = {
                     action_id: dict(group, triggers=list(group.get("triggers", [])))
                     for action_id, group in defaults.items()
