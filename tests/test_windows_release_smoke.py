@@ -95,6 +95,9 @@ class WindowsReleaseSmokeTests(unittest.TestCase):
     def test_catalog_contains_required_p0_manual_gates(self):
         case_ids = {case.case_id for case in SMOKE_CASES}
         required = {
+            "apps.launch_known",
+            "browser.foreground_guard",
+            "media.delivery",
             "keyboard.unicode.notepad",
             "keyboard.unicode.chromium",
             "keyboard.unicode.win32",
