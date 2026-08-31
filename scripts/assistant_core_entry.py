@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 VOSK_MODEL_DIRNAME = "vosk-model-small-ru-0.22"
+SILERO_MODEL_FILENAME = "v5_5_ru.pt"
 SELF_TEST_ENV = "ZIREN_PACKAGE_SELF_TEST"
 
 
@@ -20,33 +21,50 @@ def _embedded_vosk_model() -> Path:
     return _bundle_root() / "models" / "vosk" / VOSK_MODEL_DIRNAME
 
 
-def _validate_embedded_release_assets() -> Path:
-    model = _embedded_vosk_model()
-    required = (model / "am", model / "conf", model / "graph")
+def _embedded_silero_model() -> Path:
+    return _bundle_root() / "models" / "silero" / SILERO_MODEL_FILENAME
+
+
+def _configure_embedded_release_assets() -> tuple[Path, Path]:
+    vosk_model = _embedded_vosk_model()
+    required = (vosk_model / "am", vosk_model / "conf", vosk_model / "graph")
     missing = [path.name for path in required if not path.exists()]
     if missing:
         raise RuntimeError(
             "Packaged Vosk model is incomplete: " + ", ".join(missing)
         )
-    return model
+
+    silero_model = _embedded_silero_model()
+    if not silero_model.is_file() or silero_model.stat().st_size < 1_000_000:
+        raise RuntimeError(f"Packaged Silero model is missing or invalid: {silero_model}")
+
+    os.environ["ZIREN_VOSK_MODEL_PATH"] = str(vosk_model)
+    os.environ["ZIREN_SILERO_MODEL_PATH"] = str(silero_model)
+    return vosk_model, silero_model
 
 
 def package_self_test() -> int:
     """Validate the frozen bundle without opening audio devices or the network."""
-    model = _validate_embedded_release_assets()
-    os.environ["ZIREN_VOSK_MODEL_PATH"] = str(model)
+    _configure_embedded_release_assets()
 
-    # Import the runtime entrypoint so PyInstaller hidden-import/package problems
-    # fail in CI before the executable is shipped. Do not call main(): that would
-    # open the microphone and require a real desktop session.
+    # Import the complete runtime so hidden-import/package problems fail in CI.
     from app import main as runtime_main  # noqa: F401
+
+    # Load and warm the bundled TTS model. This deliberately does not call
+    # speak(), so CI never needs a physical audio output device.
+    from app.voice.audio_state import AudioState
+    from app.voice.tts_silero import SileroTTS
+
+    tts = SileroTTS(AudioState())
+    tts.load()
+    if tts.model is None:
+        raise RuntimeError("Packaged Silero model did not load")
 
     return 0
 
 
 def main() -> None:
-    model = _validate_embedded_release_assets()
-    os.environ.setdefault("ZIREN_VOSK_MODEL_PATH", str(model))
+    _configure_embedded_release_assets()
 
     if os.getenv(SELF_TEST_ENV, "").strip() == "1":
         raise SystemExit(package_self_test())
