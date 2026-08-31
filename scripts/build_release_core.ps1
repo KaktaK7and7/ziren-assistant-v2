@@ -1,5 +1,6 @@
 param(
     [string]$ModelUrl = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
+    [string]$ExpectedModelSha256 = "",
     [string]$WorkDir = "build\release-core"
 )
 
@@ -23,6 +24,14 @@ if (-not (Test-Path $modelZip)) {
     curl.exe -fL --retry 4 --retry-delay 3 $ModelUrl -o $modelZip
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to download Vosk model from the official source"
+    }
+}
+
+$modelArchiveHash = (Get-FileHash -Algorithm SHA256 $modelZip).Hash.ToLowerInvariant()
+if ($ExpectedModelSha256) {
+    $expected = $ExpectedModelSha256.Trim().ToLowerInvariant()
+    if ($expected.Length -ne 64 -or $modelArchiveHash -ne $expected) {
+        throw "Vosk archive SHA256 mismatch: expected=$expected actual=$modelArchiveHash"
     }
 }
 
@@ -93,9 +102,11 @@ $metadata = [ordered]@{
     size_bytes = $size
     vosk_model = "vosk-model-small-ru-0.22"
     vosk_source = $ModelUrl
+    vosk_archive_sha256 = $modelArchiveHash
 }
 $metadata | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $distDir "assistant-core.metadata.json")
 
 Write-Host "Release Core ready: $exe"
 Write-Host "SHA256: $hash"
 Write-Host "Size: $size bytes"
+Write-Host "Vosk archive SHA256: $modelArchiveHash"
