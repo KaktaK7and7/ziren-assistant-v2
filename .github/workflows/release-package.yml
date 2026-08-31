@@ -22,7 +22,7 @@ jobs:
   package-windows:
     name: Build frozen Windows Core
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -48,11 +48,15 @@ jobs:
         shell: pwsh
         run: |
           $metadata = Get-Content build/release-core/dist/assistant-core.metadata.json -Raw | ConvertFrom-Json
-          if ($metadata.schema_version -ne 1) { throw "Unexpected Core metadata schema" }
+          if ($metadata.schema_version -ne 2) { throw "Unexpected Core metadata schema" }
           if ($metadata.artifact -ne "assistant-core.exe") { throw "Unexpected Core artifact name" }
           if (-not $metadata.sha256 -or $metadata.sha256.Length -ne 64) { throw "Missing Core SHA256" }
           if ($metadata.size_bytes -lt 1000000) { throw "Packaged Core is unexpectedly small" }
           if ($metadata.vosk_model -ne "vosk-model-small-ru-0.22") { throw "Wrong Vosk model" }
+          if (-not $metadata.vosk_archive_sha256 -or $metadata.vosk_archive_sha256.Length -ne 64) { throw "Missing Vosk archive hash" }
+          if ($metadata.silero_model -ne "v5_5_ru.pt") { throw "Wrong Silero model" }
+          if (-not $metadata.silero_model_sha256 -or $metadata.silero_model_sha256.Length -ne 64) { throw "Missing Silero model hash" }
+          if ($metadata.offline_voice_assets -ne $true) { throw "Offline voice assets are not guaranteed" }
 
       - name: Upload frozen Core artifact
         uses: actions/upload-artifact@v4
