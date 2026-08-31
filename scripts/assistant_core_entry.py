@@ -45,10 +45,25 @@ def _configure_embedded_release_assets() -> tuple[Path, Path]:
 
 def package_self_test() -> int:
     """Validate the frozen bundle without opening audio devices or the network."""
-    _configure_embedded_release_assets()
+    vosk_model, _ = _configure_embedded_release_assets()
 
     # Import the complete runtime so hidden-import/package problems fail in CI.
-    from app import main as runtime_main  # noqa: F401
+    from app import main as runtime_main
+
+    runtime_vosk = Path(runtime_main.VOSK_MODEL_PATH).resolve()
+    if runtime_vosk != vosk_model.resolve():
+        raise RuntimeError(
+            "Runtime Vosk path does not point at the embedded model: "
+            f"runtime={runtime_vosk}, embedded={vosk_model.resolve()}"
+        )
+
+    # Actually load the recognizer model so a corrupt/incompatible packaged
+    # model fails before the installer is published. No microphone is opened.
+    import vosk
+
+    vosk_model_instance = vosk.Model(str(runtime_vosk))
+    if vosk_model_instance is None:
+        raise RuntimeError("Packaged Vosk model did not load")
 
     # Load and warm the bundled TTS model. This deliberately does not call
     # speak(), so CI never needs a physical audio output device.
