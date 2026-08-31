@@ -1,6 +1,8 @@
+import os
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -19,6 +21,7 @@ from app.voice.text_utils import (
 
 
 AudioItem = tuple[str, np.ndarray] | None
+SILERO_MODEL_ENV = "ZIREN_SILERO_MODEL_PATH"
 
 
 class SileroTTS:
@@ -40,14 +43,30 @@ class SileroTTS:
         self._player_thread: Optional[threading.Thread] = None
         register_tts(self)
 
+    def _load_model(self):
+        configured = os.getenv(SILERO_MODEL_ENV, "").strip()
+        if configured:
+            model_path = Path(configured).expanduser().resolve()
+            if not model_path.is_file():
+                raise FileNotFoundError(
+                    f"Bundled Silero model is missing: {model_path}"
+                )
+            importer = torch.package.PackageImporter(str(model_path))
+            model = importer.load_pickle("tts_models", "model")
+            model.to(torch.device("cpu"))
+            return model
+
+        model, _ = silero_tts(
+            language="ru",
+            speaker=self.model_id,
+        )
+        return model
+
     def load(self) -> None:
         print("🔄 Загружаю Silero TTS...")
         torch.set_num_threads(4)
 
-        self.model, _ = silero_tts(
-            language="ru",
-            speaker=self.model_id,
-        )
+        self.model = self._load_model()
 
         print("🔥 Прогреваю Silero...")
 
