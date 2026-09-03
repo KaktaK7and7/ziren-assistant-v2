@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -55,20 +56,17 @@ class CommandRouter:
             return None
 
         command_text = text.strip().lower()
+        module = self._select_local_module(command_text)
+        if module is None:
+            return None
 
-        for module in self.registry.all():
-            if not module.can_handle(command_text):
-                continue
+        if not self.feature_gate.is_allowed(module.feature_id, module.plan):
+            return None
 
-            if not self.feature_gate.is_allowed(module.feature_id, module.plan):
-                return None
-
-            return CommandRouteResult(
-                module=module,
-                response=module.handle(command_text),
-            )
-
-        return None
+        return CommandRouteResult(
+            module=module,
+            response=module.handle(command_text),
+        )
 
     def route_explicit(self, text: str) -> CommandRouteResult | None:
         """Melissa route: semantic selection first, local fallback only on outage."""
@@ -95,6 +93,27 @@ class CommandRouter:
                 meta={"error": str(error)},
             )
             return self._route_explicit_local_fallback(command_text)
+
+        if result.reason.startswith("subscription:"):
+            parts = result.reason.split(":", 2)
+            code = parts[1] if len(parts) > 1 else "subscription_required"
+            server_message = parts[2] if len(parts) > 2 else ""
+            add_log(
+                "Мелисса ограничена тарифом",
+                level="warn",
+                meta={"code": code},
+            )
+            if code == "ai_budget_exhausted":
+                notice_text = (
+                    server_message
+                    or "AI-ресурс на текущий период закончился. Змея и локальные команды продолжают работать."
+                )
+            else:
+                notice_text = (
+                    server_message
+                    or "Мелисса доступна на тарифах Plus и Pro. Змея и локальные команды остаются бесплатными."
+                )
+            return self._command_rejected_notice(result.reason, 0.0, notice_text)
 
         if result.matched:
             module = self.registry.get_module_by_feature_id(result.feature_id)
@@ -178,32 +197,85 @@ class CommandRouter:
         self,
         command_text: str,
     ) -> CommandRouteResult | None:
-        """Safe outage fallback for already-known exact triggers only."""
-        for module in self.registry.all():
-            has_explicit_trigger = any(
-                command_text == trigger.strip().lower()
-                or command_text.startswith(f"{trigger.strip().lower()} ")
-                for trigger in module.get_triggers()
-                if trigger.strip()
-            )
+        """Safe outage fallback for already-known exact/prefix triggers only."""
+        module = self._select_local_module(command_text, require_explicit_prefix=True)
+        if module is None:
+            return None
 
-            if not has_explicit_trigger or not module.can_handle(command_text):
+        if not self.feature_gate.is_allowed(module.feature_id, module.plan):
+            return None
+
+        add_log(
+            "Мелисса использует локальный trigger fallback",
+            level="warn",
+            meta={"feature_id": module.feature_id},
+        )
+        return CommandRouteResult(
+            module=module,
+            response=module.handle(command_text),
+        )
+
+    def _select_local_module(
+        self,
+        command_text: str,
+        *,
+        require_explicit_prefix: bool = False,
+    ) -> AssistantModule | None:
+        """Pick the most specific local trigger instead of registry order.
+
+        Many useful phrases intentionally overlap: app.launch owns "открой",
+        while file navigation owns "открой загрузки"; social messaging owns
+        "напиши", while text input owns "напиши здесь". First-match routing
+        makes those pairs fragile. Longest exact/prefix trigger wins, while a
+        module with stateful can_handle() (for example pending app selection)
+        can still participate with score 0 in normal Snake mode.
+        """
+        best_module: AssistantModule | None = None
+        best_score = -1
+
+        for module in self.registry.all():
+            if not module.can_handle(command_text):
                 continue
 
-            if not self.feature_gate.is_allowed(module.feature_id, module.plan):
-                return None
+            score = self._module_trigger_score(module, command_text)
+            if require_explicit_prefix and score < 20_000:
+                continue
 
-            add_log(
-                "Мелисса использует локальный trigger fallback",
-                level="warn",
-                meta={"feature_id": module.feature_id},
-            )
-            return CommandRouteResult(
-                module=module,
-                response=module.handle(command_text),
-            )
+            if score > best_score:
+                best_module = module
+                best_score = score
 
-        return None
+        return best_module
+
+    @classmethod
+    def _module_trigger_score(cls, module: AssistantModule, text: str) -> int:
+        normalized = cls._normalize_trigger_text(text)
+        best = 0
+
+        for trigger in module.get_triggers():
+            needle = cls._normalize_trigger_text(trigger)
+            if not needle:
+                continue
+
+            length = len(needle)
+            if normalized == needle:
+                best = max(best, 30_000 + length)
+                continue
+
+            if normalized.startswith(f"{needle} "):
+                best = max(best, 20_000 + length)
+                continue
+
+            if re.search(rf"\b{re.escape(needle)}\b", normalized):
+                best = max(best, 10_000 + length)
+
+        return best
+
+    @staticmethod
+    def _normalize_trigger_text(text: str) -> str:
+        value = str(text or "").lower().replace("ё", "е")
+        value = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE)
+        return re.sub(r"\s+", " ", value).strip()
 
     def _command_rejected_notice(
         self,

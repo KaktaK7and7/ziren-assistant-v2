@@ -22,6 +22,19 @@ class AssistantModule(ABC):
     def set_trigger_store(self, trigger_store: TriggerStore) -> None:
         self.trigger_store = trigger_store
 
+    @staticmethod
+    def _route_metadata(group: dict[str, Any]) -> dict[str, bool]:
+        """Keep execution-route flags separate from user-editable triggers.
+
+        These flags are part of the capability contract. They must survive
+        trigger normalization, otherwise a Snake-only action can accidentally
+        leak back into Melissa's semantic catalog (or vice versa).
+        """
+        return {
+            "melissa_semantic": group.get("melissa_semantic", True) is not False,
+            "snake_triggers": group.get("snake_triggers", True) is not False,
+        }
+
     def get_trigger_groups(self) -> dict[str, dict[str, Any]]:
         default_groups = self.get_default_trigger_groups()
 
@@ -32,6 +45,7 @@ class AssistantModule(ABC):
             action_id: {
                 "display_name": str(group.get("display_name", action_id)),
                 "triggers": list(group.get("triggers", [])),
+                **self._route_metadata(group),
             }
             for action_id, group in default_groups.items()
         }
@@ -42,6 +56,8 @@ class AssistantModule(ABC):
         seen: set[str] = set()
 
         for group in trigger_groups.values():
+            if group.get("snake_triggers", True) is False:
+                continue
             for trigger in group.get("triggers", []):
                 if not isinstance(trigger, str) or trigger in seen:
                     continue
@@ -64,6 +80,7 @@ class AssistantModule(ABC):
                     "display_name": str(group.get("display_name", action_id)),
                     "triggers": list(group.get("triggers", [])),
                     "argument_hint": str(group.get("argument_hint", "")),
+                    **self._route_metadata(group),
                 }
                 for action_id, group in self.default_trigger_groups.items()
                 if isinstance(action_id, str) and isinstance(group, dict)
@@ -75,6 +92,8 @@ class AssistantModule(ABC):
                     "display_name": self.display_name,
                     "triggers": list(self.default_triggers),
                     "argument_hint": "",
+                    "melissa_semantic": True,
+                    "snake_triggers": True,
                 }
             }
 
@@ -83,7 +102,7 @@ class AssistantModule(ABC):
     def get_action_triggers(self, action_id: str) -> list[str]:
         group = self.get_trigger_groups().get(action_id)
 
-        if not isinstance(group, dict):
+        if not isinstance(group, dict) or group.get("snake_triggers", True) is False:
             return []
 
         triggers = group.get("triggers", [])

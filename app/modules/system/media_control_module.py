@@ -29,7 +29,10 @@ class SystemMediaControlModule(AssistantModule):
                 "пауза",
                 "поставь на паузу",
             ],
-            "argument_hint": "Без аргументов. Отправляет системную media pause команду.",
+            "argument_hint": (
+                "Без аргументов. Передаёт глобальную Windows media play/pause команду. "
+                "Core пока не подтверждает состояние медиасеанса после события."
+            ),
         },
         "media.resume": {
             "display_name": "Продолжить",
@@ -37,7 +40,10 @@ class SystemMediaControlModule(AssistantModule):
                 "продолжи",
                 "продолжи музыку",
             ],
-            "argument_hint": "Без аргументов. Возобновляет системное медиавоспроизведение.",
+            "argument_hint": (
+                "Без аргументов. Передаёт глобальную Windows media play/pause команду. "
+                "Core пока не подтверждает состояние медиасеанса после события."
+            ),
         },
         "media.next": {
             "display_name": "Следующий трек",
@@ -45,7 +51,7 @@ class SystemMediaControlModule(AssistantModule):
                 "следующий трек",
                 "следующая песня",
             ],
-            "argument_hint": "Без аргументов. Переключает на следующий трек.",
+            "argument_hint": "Без аргументов. Передаёт глобальную Windows media-next команду.",
         },
         "media.previous": {
             "display_name": "Предыдущий трек",
@@ -53,14 +59,14 @@ class SystemMediaControlModule(AssistantModule):
                 "предыдущий трек",
                 "предыдущая песня",
             ],
-            "argument_hint": "Без аргументов. Переключает на предыдущий трек.",
+            "argument_hint": "Без аргументов. Передаёт глобальную Windows media-previous команду.",
         },
         "media.stop": {
             "display_name": "Остановить музыку",
             "triggers": [
                 "останови музыку",
             ],
-            "argument_hint": "Без аргументов. Останавливает системное медиавоспроизведение.",
+            "argument_hint": "Без аргументов. Передаёт глобальную Windows media-stop команду.",
         },
         "media.play_preset": {
             "display_name": "Открыть музыкальный сценарий",
@@ -184,18 +190,18 @@ class SystemMediaControlModule(AssistantModule):
 
     def _success_text(self, action: str, result) -> str:
         if action == "pause":
-            return "Ставлю на паузу."
+            return "Передала Windows медиакоманду play/pause. Если есть активный медиасеанс, он должен переключиться."
 
         if action == "resume":
-            return "Продолжаю воспроизведение."
+            return "Передала Windows медиакоманду play/pause. Если есть активный медиасеанс, он должен переключиться."
 
         if action == "next":
-            return "Включаю следующий трек."
+            return "Передала Windows команду следующего трека."
 
         if action == "previous":
-            return "Включаю предыдущий трек."
+            return "Передала Windows команду предыдущего трека."
 
         if action == "stop":
-            return "Останавливаю музыку."
+            return "Передала Windows команду остановить медиавоспроизведение."
 
         return result.message

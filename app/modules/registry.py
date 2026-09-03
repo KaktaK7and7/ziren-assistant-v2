@@ -24,6 +24,15 @@ from app.modules.system.window_control_module import SystemWindowControlModule
 from app.settings.trigger_store import TriggerStore
 
 
+# Keep this aligned with the auth-site gateway and AI-service classifier. A
+# smaller bounded catalog is cheaper and more accurate than silently allowing
+# one layer to truncate a feature after Core has already advertised it.
+MAX_AI_ACTIONS_PER_FEATURE = 40
+MAX_AI_ARGUMENT_HINT_LENGTH = 160
+MAX_AI_VOICE_EXAMPLES_PER_ACTION = 4
+MAX_AI_VOICE_EXAMPLE_LENGTH = 100
+
+
 class ModuleRegistry:
     def __init__(self, trigger_store: TriggerStore | None = None) -> None:
         self._modules: list[AssistantModule] = []
@@ -32,7 +41,6 @@ class ModuleRegistry:
     def register(self, module: AssistantModule) -> None:
         if self.trigger_store is not None:
             module.set_trigger_store(self.trigger_store)
-
         self._modules.append(module)
 
     def all(self) -> list[AssistantModule]:
@@ -42,7 +50,6 @@ class ModuleRegistry:
         for module in self._modules:
             if module.feature_id == feature_id:
                 return module
-
         return None
 
     def execute_action(
@@ -91,33 +98,31 @@ class ModuleRegistry:
             actions = []
             defaults = module.get_default_trigger_groups()
             for action_id, group in defaults.items():
-                argument_hint = str(group.get("argument_hint", "")).strip()
-                trigger_examples = [
-                    " ".join(trigger.split())
+                # Some local trigger groups are intentionally Snake-only. A
+                # scalable semantic action can represent them more compactly.
+                if group.get("melissa_semantic", True) is False:
+                    continue
+
+                voice_examples = [
+                    " ".join(trigger.split())[:MAX_AI_VOICE_EXAMPLE_LENGTH]
                     for trigger in group.get("triggers", [])
                     if isinstance(trigger, str) and trigger.strip()
-                ][:4]
-                if trigger_examples:
-                    examples = "; ".join(trigger_examples)
-                    argument_hint = (
-                        f"{argument_hint} Голосовые примеры: {examples}."
-                        if argument_hint
-                        else f"Голосовые примеры: {examples}."
-                    )
+                ][:MAX_AI_VOICE_EXAMPLES_PER_ACTION]
 
                 actions.append({
                     "action_id": action_id,
                     "display_name": str(group.get("display_name", action_id)),
-                    # Gateway intentionally caps this field; keep the useful voice
-                    # examples near the beginning of the semantic capability data.
-                    "argument_hint": argument_hint[:320],
+                    "argument_hint": str(group.get("argument_hint", "")).strip()[
+                        :MAX_AI_ARGUMENT_HINT_LENGTH
+                    ],
+                    "voice_examples": voice_examples,
                 })
 
             if actions:
                 result.append({
                     "feature_id": module.feature_id,
                     "display_name": module.display_name,
-                    "actions": actions[:40],
+                    "actions": actions[:MAX_AI_ACTIONS_PER_FEATURE],
                 })
 
         return result
@@ -136,7 +141,6 @@ class ModuleRegistry:
 
     def build_feature_trigger_response(self, module: AssistantModule) -> dict:
         trigger_groups = module.get_trigger_groups()
-
         return {
             "feature_id": module.feature_id,
             "display_name": module.display_name,
@@ -160,8 +164,9 @@ class ModuleRegistry:
                 "argument_hint": str(
                     defaults.get(action_id, {}).get("argument_hint", "")
                 ),
-                "melissa_semantic": structured,
-                "snake_triggers": True,
+                "melissa_semantic": structured
+                and defaults.get(action_id, {}).get("melissa_semantic", True) is not False,
+                "snake_triggers": defaults.get(action_id, {}).get("snake_triggers", True) is not False,
             }
             for action_id, group in groups.items()
         ]
@@ -169,15 +174,12 @@ class ModuleRegistry:
     def _flatten_groups(self, groups: dict[str, dict]) -> list[str]:
         triggers: list[str] = []
         seen: set[str] = set()
-
         for group in groups.values():
             for trigger in group.get("triggers", []):
                 if not isinstance(trigger, str) or trigger in seen:
                     continue
-
                 triggers.append(trigger)
                 seen.add(trigger)
-
         return triggers
 
     def _plan_value(self, module: AssistantModule) -> str:

@@ -17,6 +17,9 @@ def _ensure_windows() -> None:
 
 def _press_key(vk_code: int) -> None:
     _ensure_windows()
+    # These are global Windows media-key events. Windows accepting the event does
+    # not prove that an application had an active media session, so callers must
+    # report command delivery rather than claiming playback state changed.
     windll.user32.keybd_event(vk_code, 0, 0, 0)
     windll.user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
 
@@ -38,7 +41,10 @@ def press_stop() -> None:
 
 
 def open_url(url: str) -> None:
-    if not url.strip():
+    target = url.strip()
+    if not target:
         raise RuntimeError("URL is required.")
 
-    webbrowser.open(url)
+    opened = bool(webbrowser.open(target))
+    if not opened:
+        raise RuntimeError("Windows не подтвердила открытие ссылки в браузере.")

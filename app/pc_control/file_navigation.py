@@ -1,66 +1,21 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
+import uuid
+from ctypes import wintypes
 from pathlib import Path
 
 
 SAFE_OPEN_EXTENSIONS = {
-    # Documents and plain data.
-    ".csv",
-    ".doc",
-    ".docx",
-    ".epub",
-    ".json",
-    ".log",
-    ".md",
-    ".ods",
-    ".odt",
-    ".pdf",
-    ".ppt",
-    ".pptx",
-    ".rtf",
-    ".txt",
-    ".xls",
-    ".xlsx",
-    ".xml",
-    # Images.
-    ".avif",
-    ".bmp",
-    ".gif",
-    ".jpeg",
-    ".jpg",
-    ".png",
-    ".svg",
-    ".tif",
-    ".tiff",
-    ".webp",
-    # Audio and video.
-    ".aac",
-    ".avi",
-    ".flac",
-    ".m4a",
-    ".mkv",
-    ".mov",
-    ".mp3",
-    ".mp4",
-    ".ogg",
-    ".opus",
-    ".wav",
-    ".webm",
-    # Archives are opened by the user's configured archive application.
-    ".7z",
-    ".rar",
-    ".tar",
-    ".zip",
-    # Common creative / CAD / 3D project files.
-    ".3ds",
-    ".blend",
-    ".dxf",
-    ".fbx",
-    ".obj",
-    ".psd",
-    ".stl",
+    ".csv", ".doc", ".docx", ".epub", ".json", ".log", ".md", ".ods",
+    ".odt", ".pdf", ".ppt", ".pptx", ".rtf", ".txt", ".xls", ".xlsx",
+    ".xml", ".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg",
+    ".tif", ".tiff", ".webp", ".aac", ".avi", ".flac", ".m4a", ".mkv",
+    ".mov", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm", ".7z",
+    ".rar", ".tar", ".zip", ".3ds", ".blend", ".dxf", ".fbx", ".obj",
+    ".psd", ".stl",
 }
 
 PARTIAL_DOWNLOAD_EXTENSIONS = {
@@ -70,6 +25,30 @@ PARTIAL_DOWNLOAD_EXTENSIONS = {
     ".partial",
     ".tmp",
 }
+
+KNOWN_FOLDER_IDS = {
+    "downloads": "374DE290-123F-4565-9164-39C4925E467B",
+    "documents": "FDD39AD0-238F-46AF-ADB4-6C85480369C7",
+    "pictures": "33E28130-4E1E-4676-835A-98395C3BC3BB",
+    "desktop": "B4BFCC3A-DB2C-424C-B029-7FE99A87C641",
+    "music": "4BD8D571-6D19-48D3-BE97-422220080E43",
+    "videos": "18989B1D-99B5-455B-841C-AB7C74E4DDFC",
+}
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    @classmethod
+    def from_text(cls, value: str) -> "GUID":
+        parsed = uuid.UUID(value)
+        tail = (ctypes.c_ubyte * 8)(*parsed.bytes[8:])
+        return cls(parsed.time_low, parsed.time_mid, parsed.time_hi_version, tail)
 
 
 class FileNavigationError(RuntimeError):
@@ -85,7 +64,7 @@ def user_home() -> Path:
     return Path(os.environ.get("USERPROFILE") or Path.home())
 
 
-def known_folders() -> dict[str, Path]:
+def _fallback_known_folders() -> dict[str, Path]:
     home = user_home()
     return {
         "downloads": home / "Downloads",
@@ -95,6 +74,58 @@ def known_folders() -> dict[str, Path]:
         "music": home / "Music",
         "videos": home / "Videos",
     }
+
+
+def _known_folder_path(folder_guid: str) -> Path:
+    _require_windows()
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+    guid = GUID.from_text(folder_guid)
+    path_pointer = ctypes.c_void_p()
+
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(GUID),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+
+    result = shell32.SHGetKnownFolderPath(
+        ctypes.byref(guid),
+        0,
+        None,
+        ctypes.byref(path_pointer),
+    )
+    if result != 0 or not path_pointer.value:
+        raise FileNavigationError("Windows не смогла определить системную папку")
+
+    try:
+        value = ctypes.wstring_at(path_pointer.value)
+    finally:
+        ole32.CoTaskMemFree(path_pointer)
+
+    if not value:
+        raise FileNavigationError("Windows вернула пустой путь системной папки")
+    return Path(value)
+
+
+def known_folders() -> dict[str, Path]:
+    fallback = _fallback_known_folders()
+    if os.name != "nt":
+        return fallback
+
+    resolved: dict[str, Path] = {}
+    for folder_id, guid in KNOWN_FOLDER_IDS.items():
+        try:
+            resolved[folder_id] = _known_folder_path(guid)
+        except (FileNavigationError, OSError, AttributeError):
+            # Older/custom Windows shells can fail one Known Folder lookup.
+            # Keep a deterministic user-profile fallback for that folder only.
+            resolved[folder_id] = fallback[folder_id]
+    return resolved
 
 
 def resolve_known_folder(folder_id: str) -> Path:

@@ -5,7 +5,30 @@ from typing import Any
 
 from app.features.plans import Plan
 from app.modules.base import AssistantModule, ModuleResponse
+from app.pc_control.screen_recording import (
+    ScreenRecordingError,
+    open_recording_directory,
+)
 from app.pc_control.windows_input import WindowsInputError, send_hotkey
+
+
+RECORDING_TOGGLE_TRIGGERS = [
+    "начни запись экрана",
+    "запусти запись экрана",
+    "останови запись экрана",
+    "закончи запись экрана",
+    "переключи запись экрана",
+]
+
+RECORDING_FOLDER_TRIGGERS = [
+    "открой папку записей экрана",
+    "открой папку с записями экрана",
+    "открой куда сохраняются записи экрана",
+    "покажи папку записей экрана",
+    "покажи где сохраняются записи экрана",
+    "где лежат записи экрана",
+    "открой папку captures",
+]
 
 
 class SystemScreenRecordingModule(AssistantModule):
@@ -14,27 +37,28 @@ class SystemScreenRecordingModule(AssistantModule):
     plan = Plan.FREE
     default_trigger_groups = {
         "screen_recording.toggle": {
-            "display_name": "Начать или остановить запись экрана",
-            "triggers": [
-                "начни запись экрана",
-                "запусти запись экрана",
-                "останови запись экрана",
-                "закончи запись экрана",
-                "переключи запись экрана",
-            ],
-            "argument_hint": "Без аргументов. Использует системное сочетание Windows Game Bar Win+Alt+R.",
-        }
+            "display_name": "Передать Windows команду записи экрана",
+            "triggers": RECORDING_TOGGLE_TRIGGERS,
+            "argument_hint": (
+                "Без аргументов. Передаёт системное сочетание Win+Alt+R. "
+                "Game Bar сама решает, началась или остановилась запись; "
+                "Ziren пока не подтверждает состояние записи как факт."
+            ),
+        },
+        "screen_recording.open_folder": {
+            "display_name": "Открыть папку записей экрана",
+            "triggers": RECORDING_FOLDER_TRIGGERS,
+            "argument_hint": "Без аргументов. Открывает фиксированную локальную папку Videos/Captures.",
+        },
     }
 
     def can_handle(self, text: str) -> bool:
-        normalized = self._normalize(text)
-        return any(
-            re.search(rf"\b{re.escape(self._normalize(trigger))}\b", normalized)
-            for trigger in self.get_action_triggers("screen_recording.toggle")
-            if trigger.strip()
-        )
+        return self._find_action(text) is not None
 
     def handle(self, text: str) -> ModuleResponse:
+        action_id = self._find_action(text)
+        if action_id == "screen_recording.open_folder":
+            return self._open_folder()
         return self._toggle(text)
 
     def execute_action(
@@ -42,9 +66,11 @@ class SystemScreenRecordingModule(AssistantModule):
         action_id: str,
         arguments: dict[str, Any] | None = None,
     ) -> ModuleResponse | None:
-        if action_id != "screen_recording.toggle":
-            return None
-        return self._toggle("")
+        if action_id == "screen_recording.toggle":
+            return self._toggle("")
+        if action_id == "screen_recording.open_folder":
+            return self._open_folder()
+        return None
 
     def _toggle(self, text: str) -> ModuleResponse:
         try:
@@ -54,10 +80,49 @@ class SystemScreenRecordingModule(AssistantModule):
 
         normalized = self._normalize(text)
         if "останов" in normalized or "закончи" in normalized:
-            return ModuleResponse(text="Передала Windows команду остановить запись экрана.")
+            return ModuleResponse(
+                text=(
+                    "Передала Windows команду остановить запись экрана. "
+                    "Проверяй индикатор Game Bar: Ziren пока не подтверждает состояние записи автоматически."
+                )
+            )
         if "начни" in normalized or "запусти" in normalized:
-            return ModuleResponse(text="Передала Windows команду начать запись экрана.")
-        return ModuleResponse(text="Переключила запись экрана через Windows Game Bar.")
+            return ModuleResponse(
+                text=(
+                    "Передала Windows команду начать запись экрана. "
+                    "Проверяй индикатор Game Bar: Ziren пока не подтверждает состояние записи автоматически."
+                )
+            )
+        return ModuleResponse(
+            text=(
+                "Передала Windows системную команду переключить запись экрана. "
+                "Game Bar сама показывает, началась или остановилась запись."
+            )
+        )
+
+    def _open_folder(self) -> ModuleResponse:
+        try:
+            open_recording_directory()
+        except (ScreenRecordingError, OSError, RuntimeError) as error:
+            return ModuleResponse(
+                text=f"Не получилось открыть папку записей экрана: {error}"
+            )
+        return ModuleResponse(text="Открываю папку записей экрана.")
+
+    def _find_action(self, text: str) -> str | None:
+        normalized = self._normalize(text)
+        matches: list[tuple[int, str]] = []
+
+        for action_id in (
+            "screen_recording.open_folder",
+            "screen_recording.toggle",
+        ):
+            for trigger in self.get_action_triggers(action_id):
+                needle = self._normalize(trigger)
+                if needle and re.search(rf"\b{re.escape(needle)}\b", normalized):
+                    matches.append((len(needle), action_id))
+
+        return max(matches, key=lambda item: item[0])[1] if matches else None
 
     @staticmethod
     def _normalize(text: str) -> str:

@@ -17,6 +17,7 @@ SCHEDULE_FILE = APP_DIR / "scheduled_jobs.json"
 MAX_JOBS = 100
 TTS_WAIT_TIMEOUT_SECONDS = 90.0
 TTS_RETRY_SECONDS = 0.35
+DELIVERY_RETRY_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,18 @@ class ReminderStore:
     def list_jobs(self) -> list[ScheduledJob]:
         with self._lock:
             return self._read_jobs()
+
+    def due_jobs(self, now: float | None = None) -> list[ScheduledJob]:
+        current = float(now if now is not None else time.time())
+        with self._lock:
+            return [job for job in self._read_jobs() if job.due_at <= current]
+
+    def has_job(self, job_id: str) -> bool:
+        target = str(job_id or "")
+        if not target:
+            return False
+        with self._lock:
+            return any(job.job_id == target for job in self._read_jobs())
 
     def add(self, kind: str, label: str, due_at: float) -> ScheduledJob:
         clean_kind = kind if kind in {"reminder", "alarm"} else "reminder"
@@ -61,15 +74,28 @@ class ReminderStore:
             self._write_jobs(jobs)
             return job
 
-    def pop_due(self, now: float | None = None) -> list[ScheduledJob]:
-        current = float(now if now is not None else time.time())
+    def remove(self, job_id: str) -> bool:
+        target = str(job_id or "")
+        if not target:
+            return False
         with self._lock:
             jobs = self._read_jobs()
-            due = [job for job in jobs if job.due_at <= current]
-            future = [job for job in jobs if job.due_at > current]
-            if due:
-                self._write_jobs(future)
-            return due
+            remaining = [job for job in jobs if job.job_id != target]
+            if len(remaining) == len(jobs):
+                return False
+            self._write_jobs(remaining)
+            return True
+
+    def pop_due(self, now: float | None = None) -> list[ScheduledJob]:
+        """Compatibility helper for callers that explicitly want destructive pop.
+
+        ReminderWorker deliberately does not use this method: it keeps a due job
+        persisted until the delivery path acknowledges it.
+        """
+        due = self.due_jobs(now)
+        for job in due:
+            self.remove(job.job_id)
+        return due
 
     def clear(self) -> int:
         with self._lock:
@@ -120,6 +146,8 @@ class ReminderWorker:
         self.store = store
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._inflight_lock = threading.Lock()
+        self._inflight: set[str] = set()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -137,47 +165,105 @@ class ReminderWorker:
 
     def _run(self) -> None:
         while not self._stop.wait(1.0):
-            for job in self.store.pop_due():
-                self._deliver(job)
+            for job in self.store.due_jobs():
+                if not self._claim(job.job_id):
+                    continue
+                threading.Thread(
+                    target=self._deliver_and_ack,
+                    args=(job,),
+                    daemon=True,
+                    name=f"ziren-scheduler-delivery-{job.job_id}",
+                ).start()
 
-    def _deliver(self, job: ScheduledJob) -> None:
-        message = (
-            f"Будильник. {job.label}"
-            if job.kind == "alarm"
-            else f"Напоминаю: {job.label}"
-        )
-        add_log(
-            "scheduler.job.due",
-            meta={"job_id": job.job_id, "kind": job.kind, "label": job.label},
-        )
-        emit_event(
-            "scheduler.job.due",
-            {
-                "job_id": job.job_id,
-                "kind": job.kind,
-                "label": job.label,
-                "message": message,
-            },
-        )
+    def _claim(self, job_id: str) -> bool:
+        with self._inflight_lock:
+            if job_id in self._inflight:
+                return False
+            self._inflight.add(job_id)
+            return True
 
-        if job.kind == "alarm":
-            threading.Thread(
-                target=self._beep_alarm,
-                daemon=True,
-                name=f"ziren-alarm-{job.job_id}",
-            ).start()
+    def _release(self, job_id: str) -> None:
+        with self._inflight_lock:
+            self._inflight.discard(job_id)
 
-        threading.Thread(
-            target=self._speak_when_available,
-            args=(message, job.job_id),
-            daemon=True,
-            name=f"ziren-reminder-tts-{job.job_id}",
-        ).start()
+    def _deliver_and_ack(self, job: ScheduledJob) -> None:
+        try:
+            # A job may have been claimed by the worker just before the user
+            # explicitly removed/cleared it. Treat removal as cancellation even
+            # for an in-flight delivery thread.
+            if not self.store.has_job(job.job_id):
+                add_log(
+                    "scheduler.job.cancelled_before_delivery",
+                    meta={"job_id": job.job_id, "kind": job.kind},
+                )
+                return
 
-    def _speak_when_available(self, message: str, job_id: str) -> None:
+            message = (
+                f"Будильник. {job.label}"
+                if job.kind == "alarm"
+                else f"Напоминаю: {job.label}"
+            )
+            add_log(
+                "scheduler.job.due",
+                meta={"job_id": job.job_id, "kind": job.kind, "label": job.label},
+            )
+            emit_event(
+                "scheduler.job.due",
+                {
+                    "job_id": job.job_id,
+                    "kind": job.kind,
+                    "label": job.label,
+                    "message": message,
+                },
+            )
+
+            if not self.store.has_job(job.job_id):
+                return
+
+            if job.kind == "alarm":
+                self._beep_alarm()
+
+            delivery = self._speak_when_available(message, job.job_id)
+            if delivery is None:
+                add_log(
+                    "scheduler.job.cancelled_inflight",
+                    meta={"job_id": job.job_id, "kind": job.kind},
+                )
+                return
+
+            if delivery:
+                if self.store.remove(job.job_id):
+                    add_log(
+                        "scheduler.job.delivered",
+                        meta={"job_id": job.job_id, "kind": job.kind},
+                    )
+                return
+
+            add_log(
+                "scheduler.job.retry_scheduled",
+                level="warn",
+                meta={"job_id": job.job_id, "kind": job.kind},
+            )
+            self._stop.wait(DELIVERY_RETRY_SECONDS)
+        except Exception as error:
+            # Do not acknowledge a job when any delivery stage unexpectedly
+            # fails. It remains persisted and will be retried later.
+            add_log(
+                "scheduler.delivery.failed",
+                level="warn",
+                meta={"job_id": job.job_id, "error": str(error)},
+            )
+            self._stop.wait(DELIVERY_RETRY_SECONDS)
+        finally:
+            self._release(job.job_id)
+
+    def _speak_when_available(self, message: str, job_id: str) -> bool | None:
         deadline = time.monotonic() + TTS_WAIT_TIMEOUT_SECONDS
 
         while not self._stop.is_set() and time.monotonic() < deadline:
+            if not self.store.has_job(job_id):
+                return None
+
             tts = get_tts()
             if tts is None:
                 self._stop.wait(TTS_RETRY_SECONDS)
@@ -195,21 +281,27 @@ class ReminderWorker:
                     self._stop.wait(TTS_RETRY_SECONDS)
                     continue
 
+                # Check again immediately before speech: clear/remove may happen
+                # while we were waiting for another utterance to finish.
+                if not self.store.has_job(job_id):
+                    return None
+
                 tts.speak(message)
-                return
+                return True
             except Exception as error:
                 add_log(
                     "scheduler.tts.failed",
                     level="warn",
                     meta={"job_id": job_id, "error": str(error)},
                 )
-                return
+                return False
 
         add_log(
             "scheduler.tts.timeout",
             level="warn",
             meta={"job_id": job_id},
         )
+        return False
 
     @staticmethod
     def _beep_alarm() -> None:

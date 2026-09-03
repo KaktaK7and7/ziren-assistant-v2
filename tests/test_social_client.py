@@ -4,6 +4,7 @@ import unittest
 import httpx
 
 from app.api.social_client import (
+    MAX_SCREENSHOT_BYTES,
     SocialApiError,
     SocialClient,
     SocialFriend,
@@ -41,6 +42,15 @@ class FriendVoiceResolverTests(unittest.TestCase):
 
         with self.assertRaises(SocialApiError):
             resolve_friend_by_voice(friends, "Алексей")
+
+    def test_equally_plausible_friends_are_rejected_as_ambiguous(self) -> None:
+        friends = [
+            SocialFriend(id=1, username="Alex One"),
+            SocialFriend(id=2, username="Alex Two"),
+        ]
+
+        with self.assertRaisesRegex(SocialApiError, "несколько похожих друзей"):
+            resolve_friend_by_voice(friends, "alex")
 
 
 class SocialScreenshotTransportTests(unittest.TestCase):
@@ -88,6 +98,51 @@ class SocialScreenshotTransportTests(unittest.TestCase):
         self.assertEqual(message.kind, "screenshot")
         self.assertEqual(message.recipient_id, 7)
 
+    def test_invalid_jpeg_is_rejected_before_any_network_request(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(500, json={"ok": False})
+
+        client = SocialClient(
+            desktop_token="desktop-test-token",
+            client=httpx.Client(
+                base_url="https://ziren.test",
+                transport=httpx.MockTransport(handler),
+            ),
+        )
+        friend = SocialFriend(id=7, username="Diana")
+        data_url = "data:image/jpeg;base64," + base64.b64encode(b"not-a-jpeg").decode("ascii")
+
+        with self.assertRaisesRegex(SocialApiError, "Некорректный снимок"):
+            client.send_screenshot(friend, data_url)
+
+        self.assertEqual(requests, [])
+
+    def test_oversized_jpeg_is_rejected_before_any_network_request(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(500, json={"ok": False})
+
+        client = SocialClient(
+            desktop_token="desktop-test-token",
+            client=httpx.Client(
+                base_url="https://ziren.test",
+                transport=httpx.MockTransport(handler),
+            ),
+        )
+        friend = SocialFriend(id=7, username="Diana")
+        jpeg = b"\xff\xd8\xff" + b"x" * MAX_SCREENSHOT_BYTES
+        data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+
+        with self.assertRaisesRegex(SocialApiError, "Некорректный снимок"):
+            client.send_screenshot(friend, data_url)
+
+        self.assertEqual(requests, [])
+
 
 class FakeSocialClient:
     def __init__(self) -> None:
@@ -128,6 +183,42 @@ class SocialMessagingCommandTests(unittest.TestCase):
 
         self.assertFalse(client.sent)
         self.assertTrue(response.text)
+
+    def test_ambiguous_voice_recipient_never_posts_a_message(self) -> None:
+        seen_methods = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_methods.append((request.method, request.url.path))
+            if request.method == "GET" and request.url.path == "/api/social/friends":
+                return httpx.Response(
+                    200,
+                    json={
+                        "ok": True,
+                        "friends": [
+                            {"id": 1, "username": "Alex One"},
+                            {"id": 2, "username": "Alex Two"},
+                        ],
+                    },
+                )
+            return httpx.Response(500, json={"ok": False, "error": "unexpected POST"})
+
+        client = SocialClient(
+            desktop_token="desktop-test-token",
+            client=httpx.Client(
+                base_url="https://ziren.test",
+                transport=httpx.MockTransport(handler),
+            ),
+        )
+        module = SystemSocialMessagingModule(
+            client=client,
+            start_inbox_listener=False,
+        )
+
+        response = module.handle("напиши alex привет")
+
+        self.assertTrue(response.text)
+        self.assertIn(("GET", "/api/social/friends"), seen_methods)
+        self.assertFalse(any(method == "POST" for method, _path in seen_methods))
 
 
 if __name__ == "__main__":
