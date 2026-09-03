@@ -42,6 +42,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-build.txt
 
+      - name: Probe official Silero v5.5 model checksum
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "build/release-assets" | Out-Null
+          $target = "build/release-assets/v5_5_ru.probe.pt"
+          Invoke-WebRequest `
+            -Uri "https://models.silero.ai/models/tts/ru/v5_5_ru.pt" `
+            -OutFile $target
+          $file = Get-Item $target
+          $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "SILERO_V5_5_RU_BYTES=$($file.Length)"
+          Write-Host "SILERO_V5_5_RU_SHA256=$hash"
+          Remove-Item $target -Force
+
       - name: Prepare verified Vosk release model
         run: python scripts/prepare_windows_release_assets.py --output-root build/release-assets
 
