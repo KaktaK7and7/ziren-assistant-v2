@@ -1,0 +1,82 @@
+name: Windows Core release artifact
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/**"
+      - "scripts/build_windows_core.py"
+      - "scripts/prepare_windows_release_assets.py"
+      - "requirements.txt"
+      - "requirements-build.txt"
+      - ".github/workflows/release-windows-core.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-core-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and self-test standalone Core
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Install runtime and packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Prepare verified Vosk release model
+        run: python scripts/prepare_windows_release_assets.py --output-root build/release-assets
+
+      - name: Build standalone Core executable
+        run: python scripts/build_windows_core.py --clean --skip-assets
+
+      - name: Self-test packaged Core
+        shell: pwsh
+        run: |
+          $model = (Resolve-Path "build/release-assets/vosk-model-small-ru-0.22").Path
+          $env:ZIREN_VOSK_MODEL_PATH = $model
+          & "build/windows-core/assistant-core.exe" --self-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged Core self-test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify release payload
+        shell: pwsh
+        run: |
+          $core = Get-Item "build/windows-core/assistant-core.exe"
+          if ($core.Length -lt 1MB) { throw "assistant-core.exe is unexpectedly small" }
+          $model = "build/release-assets/vosk-model-small-ru-0.22"
+          foreach ($marker in @("am", "conf", "graph")) {
+            if (-not (Test-Path (Join-Path $model $marker))) {
+              throw "Bundled Vosk model is missing $marker"
+            }
+          }
+          Get-FileHash "build/windows-core/assistant-core.exe" -Algorithm SHA256 | Format-List
+
+      - name: Upload Core release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ziren-windows-core-${{ github.sha }}
+          path: |
+            build/windows-core/assistant-core.exe
+            build/release-assets/vosk-model-small-ru-0.22/**
+          if-no-files-found: error
+          retention-days: 14
