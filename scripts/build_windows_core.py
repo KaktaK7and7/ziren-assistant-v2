@@ -77,7 +77,7 @@ def build_core(*, clean: bool = False, skip_assets: bool = False) -> Path:
         "uvicorn.protocols.websockets.auto",
         "--hidden-import",
         "uvicorn.lifespan.on",
-        str(PROJECT_ROOT / "app" / "main.py"),
+        str(PROJECT_ROOT / "app" / "release_entry.py"),
     ]
     _run(command, env=env)
 
