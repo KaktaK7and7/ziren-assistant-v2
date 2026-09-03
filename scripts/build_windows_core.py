@@ -57,6 +57,8 @@ def build_core(*, clean: bool = False, skip_assets: bool = False) -> Path:
         str(work_dir),
         "--specpath",
         str(spec_dir),
+        # Packages with dynamic imports, data files or native extensions that
+        # PyInstaller cannot reliably infer from the top-level application graph.
         "--collect-all",
         "silero",
         "--collect-all",
@@ -65,6 +67,10 @@ def build_core(*, clean: bool = False, skip_assets: bool = False) -> Path:
         "pycaw",
         "--collect-all",
         "comtypes",
+        "--collect-all",
+        "Levenshtein",
+        "--collect-all",
+        "rapidfuzz",
         "--hidden-import",
         "sounddevice",
         "--hidden-import",
